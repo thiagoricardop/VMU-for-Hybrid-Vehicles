@@ -1,17 +1,20 @@
-
 CC = gcc
-
 
 CFLAGS = -Wall -pthread
 
-
 TARGET = main
 
+SRCS = variables.c main.c terminal_config.c running_module.c driver_input.c display.c
+
+OBJS = $(SRCS:.c=.o)
 
 all: $(TARGET)
 
-$(TARGET): main.c
-	$(CC) $(CFLAGS) -o $(TARGET) main.c
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
 
 run: $(TARGET)
@@ -19,4 +22,4 @@ run: $(TARGET)
 
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(OBJS) $(TARGET)
