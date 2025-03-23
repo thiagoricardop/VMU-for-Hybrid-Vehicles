@@ -1,1 +1,0 @@
-Here are the modules of VMU system.
