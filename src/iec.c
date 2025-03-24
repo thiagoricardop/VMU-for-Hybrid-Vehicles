@@ -12,7 +12,7 @@
 #include "iec.h"
 #include "vmu.h"
 
-SharedData *shared_data;
+SystemState *system_state;
 sem_t *sem;
 mqd_t iec_mq_receive;
 volatile sig_atomic_t running = 1;
@@ -41,8 +41,8 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    shared_data = (SharedData *)mmap(NULL, sizeof(SharedData), PROT_READ, MAP_SHARED, shm_fd, 0);
-    if (shared_data == MAP_FAILED) {
+    system_state = (SystemState *)mmap(NULL, sizeof(SystemState), PROT_READ, MAP_SHARED, shm_fd, 0);
+    if (system_state == MAP_FAILED) {
         perror("[IEC] Error mapping shared memory");
         exit(EXIT_FAILURE);
     }
@@ -65,21 +65,46 @@ int main() {
     iec_mq_receive = mq_open(IEC_COMMAND_QUEUE_NAME, O_RDONLY | O_CREAT | O_NONBLOCK, 0666, &iec_mq_attributes);
     if (iec_mq_receive == (mqd_t)-1) {
         perror("[IEC] Error creating/opening message queue");
-        munmap(shared_data, sizeof(SharedData));
+        munmap(system_state, sizeof(SystemState));
         sem_close(sem);
         exit(EXIT_FAILURE);
     }
 
     printf("IEC Module Running\n");
 
+    SystemState state = {0};
+
     EngineCommand cmd;
     while (running) {
         if (!paused) {
+            sem_wait(sem); // Exclusive access to shared memory
+            state.speed = system_state->speed;
+            state.rpm_ev = system_state->rpm_ev;
+            state.rpm_iec = system_state->rpm_iec;
+            state.temp_ev= system_state->temp_ev;
+            state.temp_iec = system_state->temp_iec;
+            state.battery = system_state->battery;
+            state.fuel = system_state->fuel;
+            state.power_mode = system_state->power_mode;
+            state.accelerator = system_state->accelerator;
+            state.brake = system_state->brake;
+            sem_post(sem); // Release shared memory
+            
             if (mq_receive(iec_mq_receive, (char *)&cmd, sizeof(cmd), NULL) != -1) {
                 sem_wait(sem);
-                printf("[IEC] Received command type: %d, value: %d, Counter in shared memory: %d\n",
-                       cmd.type, cmd.value, shared_data->counter);
+                switch (cmd.type) {
+                    case 0:
+                        printf("[IEC] Received tick command 0\n");
+                        break;
+                    
+                    case 1:
+                        printf("[IEC] Received tick command 1\n");
+                        break;
+                    default:
+                        break;
+                }
                 sem_post(sem);
+                
             }
         }
         sleep(1);
@@ -87,7 +112,7 @@ int main() {
 
     // Cleanup
     mq_close(iec_mq_receive);
-    munmap(shared_data, sizeof(SharedData));
+    munmap(system_state, sizeof(SystemState));
     sem_close(sem);
 
     printf("[IEC] Shut down complete.\n");
