@@ -1,4 +1,4 @@
-// vmu.c
+// src/vmu.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -9,6 +9,9 @@
 #include <mqueue.h>
 #include <signal.h>
 #include <errno.h>
+#include <math.h>
+#include <pthread.h> // Include for threads
+#include <string.h>  // Include for string comparison
 #include "vmu.h"
 
 SystemState *system_state;
@@ -27,7 +30,6 @@ void handle_signal(int sig) {
     }
 }
 
-
 void display_status(const SystemState *state) {
     system("clear");
     printf("=== Estado do Sistema ===\n");
@@ -38,34 +40,286 @@ void display_status(const SystemState *state) {
     printf("IEC: %s\n", state->iec_on ? "ON" : "OFF");
     printf("Temperature EV: %.2f C\n", state->temp_ev);
     printf("Temperature IEC: %.2f C\n", state->temp_iec);
-    printf("Battery: %d%%\n", state->battery);
-    printf("Fuel: %d%%\n", state->fuel);
-    printf("Power mode: %d\n", state->power_mode);
+    printf("Battery: %.2f%%\n", state->battery);
+    printf("Fuel: %.2f%%\n", state->fuel);
+    printf("Power mode: %s\n", 
+           state->power_mode == 0 ? "Electric Only" : 
+           state->power_mode == 1 ? "Hybrid" : 
+           state->power_mode == 2 ? "Combustion Only" :
+           state->power_mode == 3 ? "Regenerative Braking" : "Parked");
     printf("Accelerator: %s\n", state->accelerator ? "ON" : "OFF");
     printf("Brake: %s\n", state->brake ? "ON" : "OFF");
+    printf("\nType `1` for accelerate, `2` for brake, or `0` for none, and press Enter:\n");
 }
 
-void init_system_state() {
-    system_state->accelerator = false;
-    system_state->brake = false;
-    system_state->speed = MIN_SPEED;
-    system_state->rpm_ev = 0;
-    system_state->rpm_iec = 0;
-    system_state->ev_on = false;
-    system_state->iec_on = false;
-    system_state->temp_ev = 25.0;
-    system_state->temp_iec = 25.0;
-    system_state->battery = MAX_BATTERY;
-    system_state->fuel = MAX_FUEL;
-    system_state->power_mode = 0;
-    system_state->transition_factor = 0.0;
+void init_system_state(SystemState *state) {
+    state->accelerator = false;
+    state->brake = false;
+    state->speed = MIN_SPEED;
+    state->rpm_ev = 0;
+    state->rpm_iec = 0;
+    state->ev_on = false;
+    state->iec_on = false;
+    state->temp_ev = 25.0;
+    state->temp_iec = 25.0;
+    state->battery = MAX_BATTERY;
+    state->fuel = MAX_FUEL;
+    state->power_mode = 5; // Parked mode initially
+    state->transition_factor = 0.0;
+}
+
+void set_acceleration(bool accelerate) {
+    sem_wait(sem);
+    system_state->accelerator = accelerate;
+    if (accelerate) {
+        system_state->brake = false;
+    }
+    sem_post(sem);
+}
+
+void set_braking(bool brake) {
+    sem_wait(sem);
+    system_state->brake = brake;
+    if (brake) {
+        system_state->accelerator = false;
+    }
+    sem_post(sem);
+}
+
+double calculate_speed(SystemState *state) {
+    double fator_variacao = 0.0;
+    sem_wait(sem);
+    if (state->accelerator) {
+        fator_variacao = (state->rpm_ev * (1.0 - state->transition_factor) + state->rpm_iec * state->transition_factor) * 0.0002;
+        state->speed = fmin(state->speed + fator_variacao, MAX_SPEED);
+    } else if (!state->brake) {
+        // Coasting - slight deceleration
+        state->speed = fmax(state->speed - 0.3, MIN_SPEED);
+    } else {
+        double fator_variacao_freio = 2.0; // Increased braking power
+        state->speed = fmax(state->speed - fator_variacao_freio, MIN_SPEED);
+    }
+    double current_speed = state->speed;
+    sem_post(sem);
+    return current_speed;
+}
+
+void vmu_control_engines() {
+    EngineCommand cmd;
+    sem_wait(sem);
+    double current_speed = system_state->speed;
+    sem_post(sem);
+
+    if (current_speed >= TRANSITION_SPEED_THRESHOLD - (TRANSITION_ZONE_WIDTH / 2.0) &&
+        current_speed <= TRANSITION_SPEED_THRESHOLD + (TRANSITION_ZONE_WIDTH / 2.0)
+        && system_state->accelerator && system_state->battery > 10.0 && system_state->fuel > 5.0) {
+        sem_wait(sem);
+        double distancia_do_limite = fabs(current_speed - TRANSITION_SPEED_THRESHOLD);
+        system_state->transition_factor = distancia_do_limite / (TRANSITION_ZONE_WIDTH / 2.0);
+        system_state->transition_factor = fmin(1.0, fmax(0.0, system_state->transition_factor));
+        double transition_factor = system_state->transition_factor;
+        sem_post(sem);
+
+        cmd.type = CMD_SET_POWER;
+        cmd.power_level = 1.0 - transition_factor;
+        mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+
+        cmd.type = CMD_SET_POWER;
+        cmd.power_level = transition_factor;
+        mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
+
+        sem_wait(sem);
+        if (transition_factor > 0.0 && !system_state->iec_on) {
+            cmd.type = CMD_START;
+            mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
+            system_state->iec_on = true;
+        } else if (transition_factor == 0.0 && system_state->iec_on) {
+            cmd.type = CMD_STOP;
+            mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
+            system_state->iec_on = false;
+        }
+
+        if (transition_factor < 1.0 && !system_state->ev_on) {
+            cmd.type = CMD_START;
+            mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+            system_state->ev_on = true;
+        } else if (transition_factor == 1.0 && system_state->ev_on) {
+            cmd.type = CMD_STOP;
+            mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+            system_state->ev_on = false;
+        }
+        sem_post(sem);
+    } else if (current_speed < TRANSITION_SPEED_THRESHOLD - (TRANSITION_ZONE_WIDTH / 2.0) && system_state->accelerator && system_state->battery > 10.0) {
+        sem_wait(sem);
+        system_state->transition_factor = 0.0;
+        sem_post(sem);
+
+        cmd.type = CMD_SET_POWER;
+        cmd.power_level = 1.0;
+        mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+        cmd.type = CMD_SET_POWER;
+        cmd.power_level = 0.0;
+        mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
+
+        sem_wait(sem);
+        if (!system_state->ev_on) {
+            cmd.type = CMD_START;
+            mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+            system_state->ev_on = true;
+        }
+        if (system_state->iec_on) {
+            cmd.type = CMD_STOP;
+            mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
+            system_state->iec_on = false;
+        }
+        sem_post(sem);
+    } else if (current_speed > TRANSITION_SPEED_THRESHOLD + (TRANSITION_ZONE_WIDTH / 2.0) && system_state->accelerator && system_state->fuel > 5.0) {
+        sem_wait(sem);
+        system_state->transition_factor = 1.0;
+        sem_post(sem);
+
+        cmd.type = CMD_SET_POWER;
+        cmd.power_level = 0.0;
+        mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+        cmd.type = CMD_SET_POWER;
+        cmd.power_level = 1.0;
+        mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
+
+        sem_wait(sem);
+        if (system_state->ev_on) {
+            cmd.type = CMD_STOP;
+            mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+            system_state->ev_on = false;
+        }
+        if (!system_state->iec_on) {
+            cmd.type = CMD_START;
+            mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
+            system_state->iec_on = true;
+        }
+        sem_post(sem);
+    }
+
+    sem_wait(sem);
+    if (system_state->battery <= 10.0 && current_speed < TRANSITION_SPEED_THRESHOLD && system_state->fuel > 5.0 && system_state->accelerator == true) {
+        system_state->transition_factor = 1.0;
+        cmd.type = CMD_SET_POWER;
+        cmd.power_level = 0.0;
+        mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+        cmd.type = CMD_SET_POWER;
+        cmd.power_level = 1.0;
+        mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
+        if (system_state->ev_on) {
+            cmd.type = CMD_STOP;
+            mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+            system_state->ev_on = false;
+        }
+        if (!system_state->iec_on) {
+            cmd.type = CMD_START;
+            mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
+            system_state->iec_on = true;
+        }
+    } else if (system_state->fuel <= 5.0 && current_speed >= TRANSITION_SPEED_THRESHOLD && system_state->accelerator == true && system_state->battery > 10.0) {
+        system_state->transition_factor = 0.0;
+        cmd.type = CMD_SET_POWER;
+        cmd.power_level = 1.0;
+        mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+        cmd.type = CMD_SET_POWER;
+        cmd.power_level = 0.0;
+        mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
+        if (!system_state->ev_on) {
+            cmd.type = CMD_START;
+            mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+            system_state->ev_on = true;
+        }
+        if (system_state->iec_on) {
+            cmd.type = CMD_STOP;
+            mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
+            system_state->iec_on = false;
+        }
+    } else if (system_state->battery <= 10.0 && system_state->fuel <= 5.0 && system_state->accelerator == true) {
+        system_state->transition_factor = 0.0;
+        cmd.type = CMD_SET_POWER;
+        cmd.power_level = 0.0;
+        mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+        mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
+        
+    }
+
+    // Smoother consumption
+    if (system_state->ev_on && system_state->accelerator) {
+        system_state->battery -= 0.2;
+        if (system_state->battery < 0.0) system_state->battery = 0.0;
+    }
+    if (system_state->iec_on && system_state->accelerator) {
+        system_state->fuel -= 0.01;
+        if (system_state->fuel < 0.0) system_state->fuel = 0.0;
+    }
+
+    // Smoother HV battery recharging
+    if (system_state->iec_on) {
+        system_state->battery += 0.01;
+        if (system_state->battery > MAX_BATTERY) system_state->battery = MAX_BATTERY;
+    } else if (current_speed > MIN_SPEED && !system_state->accelerator && !system_state->brake) {
+        system_state->battery += 0.05;
+        if (system_state->battery > MAX_BATTERY) system_state->battery = MAX_BATTERY;
+    } else if (system_state->brake && current_speed > MIN_SPEED) {
+        system_state->battery += 0.2;
+        if (system_state->battery > MAX_BATTERY) system_state->battery = MAX_BATTERY;
+    }
+
+    // Check mode
+    if (system_state->ev_on && !system_state->iec_on) {
+        system_state->power_mode = 0;
+    } else if (system_state->ev_on && system_state->iec_on) {
+        system_state->power_mode = 1;
+    } else if (!system_state->ev_on && system_state->iec_on) {
+        system_state->power_mode = 2;
+    } else if (!system_state->ev_on && !system_state->iec_on && current_speed > MIN_SPEED) {
+        system_state->power_mode = 3;
+    } else {
+        system_state->power_mode = 4;
+    }
+
+
+    sem_post(sem);
+}
+
+// Function to read user input for pedal control
+void *read_input(void *arg) {
+    char input[10];
+    while (running) {
+        fgets(input, sizeof(input), stdin);
+        // Remove trailing newline
+        input[strcspn(input, "\n")] = 0;
+
+        if (strcmp(input, "0") == 0) {
+            set_braking(false);
+            set_acceleration(false);
+            sem_wait(sem);
+            system_state->iec_on = false;
+            system_state->ev_on = false;
+            sem_post(sem);
+        } else if (strcmp(input, "1") == 0) {
+            set_acceleration(true);
+            set_braking(false);
+        } else if (strcmp(input, "2") == 0) {
+            set_acceleration(false);
+            set_braking(true);
+            sem_wait(sem);
+            system_state->iec_on = false;
+            system_state->ev_on = false;
+            sem_post(sem);
+        }
+        usleep(10000); // Small delay to avoid busy-waiting
+    }
+    return NULL;
 }
 
 int main() {
     // Configure signals
     signal(SIGUSR1, handle_signal);
-    signal(SIGINT, handle_signal); // Handle Ctrl+C
-    signal(SIGTERM, handle_signal); // Handle termination signal
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
 
     // Configuration of shared memory for VMU
     int shm_fd = shm_open(SHARED_MEM_NAME, O_CREAT | O_RDWR, 0666);
@@ -96,7 +350,7 @@ int main() {
     }
 
     // Initialize system state
-    init_system_state();
+    init_system_state(system_state);
 
     // Configuration of POSIX message queues for EV
     struct mq_attr ev_mq_attributes;
@@ -136,61 +390,33 @@ int main() {
 
     printf("VMU Module Running\n");
 
-    SystemState state = {0};
-
-    int counter = 0;
-    EngineCommand tick_cmd = {CMD_TICK, 0};
+    pthread_t input_thread;
+    if (pthread_create(&input_thread, NULL, read_input, NULL) != 0) {
+        perror("[VMU] Error creating input thread");
+        running = 0; // Exit main loop if thread creation fails
+    }
 
     while (running) {
         if (!paused) {
-            sem_wait(sem); // Exclusive access to shared memory
-            state.speed = system_state->speed;
-            state.rpm_ev = system_state->rpm_ev;
-            state.rpm_iec = system_state->rpm_iec;
-            state.temp_ev= system_state->temp_ev;
-            state.temp_iec = system_state->temp_iec;
-            state.battery = system_state->battery;
-            state.fuel = system_state->fuel;
-            state.power_mode = system_state->power_mode;
-            state.accelerator = system_state->accelerator;
-            state.brake = system_state->brake;
-            sem_post(sem); // Release shared memory
+            vmu_control_engines();
+            calculate_speed(system_state);
 
-            display_status(&state);
+            display_status(system_state);
 
-            // Logic for VMU
-            if (state.speed > MAX_SPEED) {
-                state.brake = true;
-                state.accelerator = false;
-                sem_wait(sem);
-                system_state->accelerator = false;
-                system_state->brake = true;
-                sem_post(sem);
-            } else if (state.speed <= MIN_SPEED) {
-                state.accelerator = false;
-                state.brake = false;
-                sem_wait(sem);
-                system_state->accelerator = false;
-                system_state->brake = false;
-                sem_post(sem);
-            }
-
-            if (mq_send(ev_mq, (const char *)&tick_cmd, sizeof(tick_cmd), 0) == -1) {
-                perror("[VMU] Error sending TICK to EV");
-            } else {
-                printf("[VMU] Sent TICK to EV.\n");
-            }
-
-            if (mq_send(iec_mq, (const char *)&tick_cmd, sizeof(tick_cmd), 0) == -1) {
-                perror("[VMU] Error sending TICK to IEC");
-            } else {
-                printf("[VMU] Sent TICK to IEC.\n");
-            }
+            usleep(200000); // Update every 200 ms
+        } else {
+            sleep(1);
         }
-        sleep(1); // Simulate some work or update interval
     }
 
     // Cleanup
+    EngineCommand cmd;
+    cmd.type = CMD_END;
+    mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+    mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
+    pthread_cancel(input_thread); // Request the input thread to terminate
+    pthread_join(input_thread, NULL); // Wait for the input thread to finish
+
     mq_close(ev_mq);
     mq_unlink(EV_COMMAND_QUEUE_NAME);
     mq_close(iec_mq);

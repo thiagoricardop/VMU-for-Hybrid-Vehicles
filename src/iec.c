@@ -9,6 +9,7 @@
 #include <mqueue.h>
 #include <signal.h>
 #include <errno.h>
+#include <math.h>
 #include "iec.h"
 #include "vmu.h"
 
@@ -41,7 +42,7 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    system_state = (SystemState *)mmap(NULL, sizeof(SystemState), PROT_READ, MAP_SHARED, shm_fd, 0);
+    system_state = (SystemState *)mmap(NULL, sizeof(SystemState), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (system_state == MAP_FAILED) {
         perror("[IEC] Error mapping shared memory");
         exit(EXIT_FAILURE);
@@ -72,42 +73,53 @@ int main() {
 
     printf("IEC Module Running\n");
 
-    SystemState state = {0};
-
     EngineCommand cmd;
     while (running) {
         if (!paused) {
-            sem_wait(sem); // Exclusive access to shared memory
-            state.speed = system_state->speed;
-            state.rpm_ev = system_state->rpm_ev;
-            state.rpm_iec = system_state->rpm_iec;
-            state.temp_ev= system_state->temp_ev;
-            state.temp_iec = system_state->temp_iec;
-            state.battery = system_state->battery;
-            state.fuel = system_state->fuel;
-            state.power_mode = system_state->power_mode;
-            state.accelerator = system_state->accelerator;
-            state.brake = system_state->brake;
-            sem_post(sem); // Release shared memory
-            
             if (mq_receive(iec_mq_receive, (char *)&cmd, sizeof(cmd), NULL) != -1) {
                 sem_wait(sem);
                 switch (cmd.type) {
-                    case 0:
-                        printf("[IEC] Received tick command 0\n");
+                    case CMD_START:
+                        system_state->iec_on = true;
+                        printf("[IEC] Motor a Combustão Ligado\n");
                         break;
-                    
-                    case 1:
-                        printf("[IEC] Received tick command 1\n");
+                    case CMD_STOP:
+                        system_state->iec_on = false;
+                        system_state->rpm_iec = 0;
+                        printf("[IEC] Motor a Combustão Desligado\n");
+                        break;
+                    case CMD_SET_POWER:
+                        // IEC power will be controlled by the transition factor directly
+                        system("clear");
+                        printf("[IEC] Received SET_POWER command (power level: %.2f)\n", cmd.power_level);
+                        break;
+                    case CMD_END:
+                        running = 0;
                         break;
                     default:
+                        fprintf(stderr, "[IEC] Comando desconhecido recebido\n");
                         break;
                 }
                 sem_post(sem);
-                
             }
+
+            sem_wait(sem);
+            if (system_state->iec_on) {
+                // Increase power based on the transition factor
+                system_state->rpm_iec = (int)(system_state->transition_factor * 5000);
+                system_state->temp_iec += system_state->transition_factor * 0.1;
+            } else {
+                system_state->rpm_iec = 0;
+                if (system_state->temp_iec > 25.0) {
+                    system_state->temp_iec -= 0.02;
+                }
+            }
+            sem_post(sem);
+
+            usleep(70000);
+        } else {
+            sleep(1);
         }
-        sleep(1);
     }
 
     // Cleanup

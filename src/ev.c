@@ -9,6 +9,7 @@
 #include <mqueue.h>
 #include <signal.h>
 #include <errno.h>
+#include <math.h>
 #include "ev.h"
 #include "vmu.h"
 
@@ -41,7 +42,7 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
-    system_state = (SystemState *)mmap(NULL, sizeof(SystemState), PROT_READ, MAP_SHARED, shm_fd, 0);
+    system_state = (SystemState *)mmap(NULL, sizeof(SystemState), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (system_state == MAP_FAILED) {
         perror("[EV] Error mapping shared memory");
         exit(EXIT_FAILURE);
@@ -72,42 +73,53 @@ int main() {
 
     printf("EV Module Running\n");
 
-    SystemState state = {0};
-
     EngineCommand cmd;
     while (running) {
         if (!paused) {
-            sem_wait(sem); // Exclusive access to shared memory
-            state.speed = system_state->speed;
-            state.rpm_ev = system_state->rpm_ev;
-            state.rpm_iec = system_state->rpm_iec;
-            state.temp_ev= system_state->temp_ev;
-            state.temp_iec = system_state->temp_iec;
-            state.battery = system_state->battery;
-            state.fuel = system_state->fuel;
-            state.power_mode = system_state->power_mode;
-            state.accelerator = system_state->accelerator;
-            state.brake = system_state->brake;
-            sem_post(sem); // Release shared memory
-            
-
             if (mq_receive(ev_mq_receive, (char *)&cmd, sizeof(cmd), NULL) != -1) {
                 sem_wait(sem);
                 switch (cmd.type) {
-                    case 0:
-                        printf("[EV] Received tick command 0\n");
+                    case CMD_START:
+                        system_state->ev_on = true;
+                        printf("[EV] Motor Elétrico Ligado\n");
                         break;
-                    
-                    case 1:
-                        printf("[EV] Received tick command 1\n");
+                    case CMD_STOP:
+                        system_state->ev_on = false;
+                        system_state->rpm_ev = 0;
+                        printf("[EV] Motor Elétrico Desligado\n");
+                        break;
+                    case CMD_SET_POWER:
+                        // EV power will be controlled by the transition factor directly
+                        system("clear");
+                        printf("[EV] Received SET_POWER command (power level: %.2f)\n", cmd.power_level);
+                        break;
+                    case CMD_END:
+                        running = 0;
                         break;
                     default:
+                        fprintf(stderr, "[EV] Comando desconhecido recebido\n");
                         break;
                 }
                 sem_post(sem);
             }
+
+            sem_wait(sem);
+            if (system_state->ev_on) {
+                // Increase power based on the inverse of the transition factor
+                system_state->rpm_ev = (int)((1.0 - system_state->transition_factor) * 8000);
+                system_state->temp_ev += (1.0 - system_state->transition_factor) * 0.05;
+            } else {
+                system_state->rpm_ev = 0;
+                if (system_state->temp_ev > 25.0) {
+                    system_state->temp_ev -= 0.01;
+                }
+            }
+            sem_post(sem);
+
+            usleep(50000);
+        } else {
+            sleep(1);
         }
-        sleep(1);
     }
 
     // Cleanup
