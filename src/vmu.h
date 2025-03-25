@@ -37,9 +37,9 @@ typedef struct {
     bool iec_on;
     double temp_ev;
     double temp_iec;
-    double battery; // Changed to double
-    double fuel;    // Changed to double
-    int power_mode; // 0: Hybrid, 1: Electric Only, 2: Combustion Only
+    double battery; 
+    double fuel;    
+    int power_mode; // 0: Hybrid, 1: Electric Only, 2: Combustion Only, 3: Regenerative Braking, 4: Parked
     double transition_factor;
 } SystemState;
 
@@ -49,7 +49,7 @@ typedef struct {
     int value; // Example value
 } Message;
 
-// Structure for engine commands
+// Enumeration for engine commands
 typedef enum {
     CMD_START,
     CMD_STOP,
@@ -57,7 +57,7 @@ typedef enum {
     CMD_END
 } CommandType;
 
-
+// Structure for engine commands
 typedef struct {
     CommandType type;
     double power_level;
