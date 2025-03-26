@@ -1,7 +1,7 @@
 // iec.h
 #ifndef IEC_H
 #define IEC_H
-#include "vmu.h"
+#include "../VMU/vmu.h"
 
 void handle_signal(int sig);
 
