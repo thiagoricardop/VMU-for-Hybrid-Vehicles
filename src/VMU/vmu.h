@@ -18,10 +18,12 @@
 #define MIN_SPEED 0.0
 #define MAX_TEMP_EV 120
 #define MAX_TEMP_IEC 140
-#define MAX_BATTERY 100
-#define MAX_FUEL 100
+#define MAX_BATTERY 100.0
+#define MAX_FUEL 100.0
 #define MAX_ROTACAO_EV 20000
 #define MAX_ROTACAO_IEC 7000
+#define TRANSITION_SPEED_THRESHOLD 80.0
+#define TRANSITION_ZONE_WIDTH 20.0
 
 
 // Structure for system state
@@ -35,9 +37,9 @@ typedef struct {
     bool iec_on;
     double temp_ev;
     double temp_iec;
-    int battery;
-    int fuel;
-    int power_mode;
+    double battery; 
+    double fuel;    
+    int power_mode; // 0: Hybrid, 1: Electric Only, 2: Combustion Only, 3: Regenerative Braking, 4: Parked
     double transition_factor;
 } SystemState;
 
@@ -47,14 +49,18 @@ typedef struct {
     int value; // Example value
 } Message;
 
-// Structure for engine commands
+// Enumeration for engine commands
 typedef enum {
-    CMD_TICK
+    CMD_START,
+    CMD_STOP,
+    CMD_SET_POWER,
+    CMD_END
 } CommandType;
 
+// Structure for engine commands
 typedef struct {
     CommandType type;
-    int value; // Example value
+    double power_level;
 } EngineCommand;
 
 // Signal handler function (prototype)

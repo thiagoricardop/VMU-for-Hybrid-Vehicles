@@ -1,18 +1,25 @@
 CC = gcc
 CFLAGS = -pthread -lrt -lm
-OBJS = vmu.o ev.o iec.o
-EXECS = vmu ev iec
+VMU_DIR = VMU
+IEC_DIR = IEC
+EV_DIR = EV
+BIN_DIR = bin
+OBJS = $(VMU_DIR)/vmu.o $(IEC_DIR)/iec.o $(EV_DIR)/ev.o
+EXECS = $(BIN_DIR)/vmu $(BIN_DIR)/ev $(BIN_DIR)/iec
 
-all: $(EXECS)
+all: $(BIN_DIR) $(EXECS)
 
-vmu: vmu.c vmu.h
-	$(CC) vmu.c -o vmu $(CFLAGS)
+$(BIN_DIR):
+	mkdir -p $(BIN_DIR)
 
-ev: ev.c vmu.h
-	$(CC) ev.c -o ev $(CFLAGS)
+$(BIN_DIR)/vmu: $(VMU_DIR)/vmu.c $(VMU_DIR)/vmu.h
+	$(CC) $(VMU_DIR)/vmu.c -o $(BIN_DIR)/vmu $(CFLAGS)
 
-iec: iec.c vmu.h
-	$(CC) iec.c -o iec $(CFLAGS)
+$(BIN_DIR)/ev: $(EV_DIR)/ev.c $(VMU_DIR)/vmu.h
+	$(CC) $(EV_DIR)/ev.c -o $(BIN_DIR)/ev $(CFLAGS)
+
+$(BIN_DIR)/iec: $(IEC_DIR)/iec.c $(VMU_DIR)/vmu.h
+	$(CC) $(IEC_DIR)/iec.c -o $(BIN_DIR)/iec $(CFLAGS)
 
 clean:
-	rm -f $(OBJS) $(EXECS)
+	rm -rf $(BIN_DIR)
