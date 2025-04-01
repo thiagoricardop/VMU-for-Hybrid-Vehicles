@@ -21,7 +21,17 @@ sem_t *sem;                // Pointer to the semaphore for synchronizing access 
 mqd_t ev_mq;      // Message queue descriptor for receiving commands for the EV module
 volatile sig_atomic_t running = 1; // Flag to control the main loop, volatile to ensure visibility across threads
 volatile sig_atomic_t paused = 0;  // Flag to indicate if the simulation is paused
-float BatteryEV = 100;
+double BatteryEV = 100.0;
+double evPercentage = 0.0;
+bool firstReceive = true;
+double localVelocity = 0.0;
+double lastLocalVelocity = 0.0;
+double distance = 3000;
+double rpmEV;
+double tireCircunferenceRatio = 2.19912;
+bool evActive;
+bool accelerator;
+unsigned char counter = 0;
 
 // Function to handle signals (SIGUSR1 for pause, SIGINT/SIGTERM for shutdown)
 void handle_signal(int sig) {
@@ -32,6 +42,29 @@ void handle_signal(int sig) {
         running = 0;
         printf("[EV] Shutting down...\n");
     }
+}
+
+void calculateValues () {
+
+    if (!accelerator && localVelocity != 0.0) {
+        BatteryEV += 1.0;
+    }
+
+    else if (evActive) {
+        BatteryEV -= 0.01;
+    }
+
+    if (BatteryEV < 0.0) {
+        BatteryEV = 0.0;
+    } 
+
+    if (BatteryEV > 100.0) {
+        BatteryEV = 100.0;
+    }
+    lastLocalVelocity = localVelocity;
+    
+    rpmEV = evPercentage*((localVelocity * 16.67) / tireCircunferenceRatio);
+    
 }
 
 int main() {
@@ -66,7 +99,7 @@ int main() {
     struct mq_attr ev_mq_attributes;
     ev_mq_attributes.mq_flags = 0;
     ev_mq_attributes.mq_maxmsg = 10;
-    ev_mq_attributes.mq_msgsize = sizeof(EngineCommand);
+    ev_mq_attributes.mq_msgsize = sizeof(EngineCommandEV);
     ev_mq_attributes.mq_curmsgs = 0;
 
     ev_mq = mq_open(EV_COMMAND_QUEUE_NAME, O_RDWR | O_CREAT | O_NONBLOCK, 0666, &ev_mq_attributes);
@@ -79,35 +112,41 @@ int main() {
 
     printf("EV Module Running\n");
 
-    EngineCommand cmd; // Structure to hold the received command
+    EngineCommandEV cmd; // Structure to hold the received command
     // Main loop of the EV module
     while (running) {
         if (!paused) {
+
+            while (mq_receive(ev_mq, (char *)&cmd, sizeof(cmd), NULL) == -1) {
+
+            }
+         
+            sem_wait(sem); // Acquire the semaphore to protect shared memory
+            if (!cmd.toVMU) {
             // Receive commands from the VMU through the message queue
-            if (mq_receive(ev_mq, (char *)&cmd, sizeof(cmd), NULL) != -1) {
-                sem_wait(sem); // Acquire the semaphore to protect shared memory
                 // Process the received command
+                
                 switch (cmd.type) {
+                    
                     case CMD_START:
-                        if (system_state->battery >= 30) {
-                            system_state->ev_on = true;
-                            printf("[EV] Motor Elétrico Ligado\n");
+                        if ( BatteryEV >= 10) {
+                   
+                            evActive = true;
                             strcpy(cmd.check, "ok");
+               
                         }
+
                         else {
+                            cmd.evActive = false;
+                            evActive = false;
                             strcpy(cmd.check, "no");
                         }
                         break;
+                    
                     case CMD_STOP:
-                        system_state->ev_on = false;
-                        system_state->rpm_ev = 0; // Reset RPM when stopped
-                        printf("[EV] Motor Elétrico Desligado\n");
+                        
                         break;
-                    case CMD_SET_POWER:
-                        // EV power is controlled by the inverse of the transition factor from VMU
-                        system("clear");
-                        printf("[EV] Received SET_POWER command (power level: %.2f)\n", cmd.power_level);
-                        break;
+            
                     case CMD_END:
                         running = 0; // Terminate the main loop
                         break;
@@ -115,30 +154,49 @@ int main() {
                         
                         break;
                 }
-                sem_post(sem); // Release the semaphore
-            }
 
-            sem_wait(sem); // Acquire the semaphore for updating engine state
-            // Simulate EV engine behavior
-            if (system_state->ev_on) {
-                // Increase RPM based on the inverse of the transition factor received from VMU
-                system_state->rpm_ev = (int)((1.0 - system_state->transition_factor) * 8000);
-                // Increase temperature based on the inverse of the transition factor
-                system_state->temp_ev += (1.0 - system_state->transition_factor) * 0.05;
-            } else {
-                system_state->rpm_ev = 0; // Set RPM to 0 when off
-                // Cool down the engine if it's above the ambient temperature
-                if (system_state->temp_ev > 25.0) {
-                    system_state->temp_ev -= 0.01;
+                localVelocity = cmd.globalVelocity;
+                evPercentage = cmd.power_level;
+                accelerator = cmd.accelerator;
+
+                if (evPercentage != 0) {
+                    evActive = true;                
                 }
-            }
-            sem_post(sem); // Release the semaphore
+                else {
+                    evActive = false;            
+                }
 
-            sem_wait(sem);
-            mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
-            sem_post(sem);
+                calculateValues();
+
+                system("clear");
+                printf("\nEV usage percentage: %f", evPercentage);
+                cmd.batteryEV = BatteryEV;
+                cmd.evActive = evActive;
+                cmd.rpm_ev = rpmEV;
+                sprintf(cmd.check, "Bateria enviada: %f", BatteryEV);
+                cmd.toVMU = true;
+
+                // Simulate EV engine behavior
+                if (evActive) {
+                    // Increase temperature based on the inverse of the transition factor
+                    system_state->temp_ev += (1.0 - system_state->transition_factor) * 0.05;
+                } else {
+                    // Cool down the engine if it's above the ambient temperature
+                    if (system_state->temp_ev > 25.0) {
+                        system_state->temp_ev -= 0.01;
+                    }
+                }
+
+                mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+           
+            }
             
-            usleep(50000); // Small delay for the EV loop
+            else {
+                mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+       
+            } 
+            sem_post(sem);   
+            
         } else {
             sleep(1); // Sleep for 1 second if paused
         }

@@ -5,14 +5,24 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <semaphore.h>
 #include <mqueue.h>
 #include <signal.h>
 #include <errno.h>
 #include <math.h>
 #include <pthread.h> 
-#include <string.h>  
+#include <string.h>
+#include <time.h>  
 #include "vmu.h"
+#define TIMEOUT_SECONDS 5
+
+struct timespec get_abs_timeout(int seconds) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += seconds;
+    return ts;
+}
 
 /*
 To use the VMU, you need first to make the executable files using `make` on VMU-FOR-HYBRID-VEHICLES/src terminal. After that, run each file in a different terminal, starting by ./vmu, then the ./ev and ./iec.
@@ -35,8 +45,23 @@ mqd_t ev_mq, iec_mq;      // Message queue descriptors for communication with EV
 volatile sig_atomic_t running = 1; // Flag to control the main loop, volatile to ensure visibility across threads
 volatile sig_atomic_t paused = 0;  // Flag to indicate if the simulation is paused
 unsigned char cont = 0;
-char lastmsg[3];
+char lastmsg[35];
 unsigned char safetyCount = 0;
+int ciclesQuantity;
+double iecTransitionRatio;
+double evTransitionRatio;
+bool transitionIEC = false;
+bool transitionEV = false;
+long int elapsed = 0;
+long int remaining = 0;
+bool start = true;
+long elapsed;
+long delay_ms;
+int transition = 0;
+double expectedvalueEV = 0;
+double expectedValueIEC = 0;
+bool finish = false;
+bool carStop = false;
 
 // Function to handle signals (SIGUSR1 for pause, SIGINT/SIGTERM for shutdown)
 void handle_signal(int sig) {
@@ -56,12 +81,14 @@ void display_status(const SystemState *state) {
     printf("Speed: %.2f km/h\n", state->speed);
     printf("RPM EV: %d\n", state->rpm_ev);
     printf("RPM IEC: %d\n", state->rpm_iec);
+    printf("Eletric engine ratio: %f \n", state->evPercentage);
+    printf("Combustion engine ratio: %f \n", state->iecPercentage);
     printf("EV: %s\n", state->ev_on ? "ON" : "OFF");
     printf("IEC: %s\n", state->iec_on ? "ON" : "OFF");
     printf("Temperature EV: %.2f C\n", state->temp_ev);
     printf("Temperature IEC: %.2f C\n", state->temp_iec);
-    printf("Battery: %.2f%%\n", state->battery);
-    printf("Fuel: %.2f%%\n", state->fuel);
+    printf("Battery: %f%%\n", state->battery);
+    printf("Fuel (liters): %f\n", state->fuel);
     printf("Power mode: %s\n", 
            state->power_mode == 0 ? "Electric Only" : 
            state->power_mode == 1 ? "Hybrid" : 
@@ -69,8 +96,9 @@ void display_status(const SystemState *state) {
            state->power_mode == 3 ? "Regenerative Braking" : "Parked");
     printf("Accelerator: %s\n", state->accelerator ? "ON" : "OFF");
     printf("Brake: %s\n", state->brake ? "ON" : "OFF");
-    printf("Last message Received: %s", lastmsg);
-    printf("Counter: %d", cont);
+    printf("Counter: %d\n", cont);
+    printf("Last mensage: %s", state->debg);
+    printf("\nTransition EV: %s", transitionEV ? "ON" : "OFF" );
     printf("\nType `1` for accelerate, `2` for brake, or `0` for none, and press Enter:\n");
     cont++;
 }
@@ -90,6 +118,8 @@ void init_system_state(SystemState *state) {
     state->fuel = MAX_FUEL;
     state->power_mode = 5; // Parked mode initially
     state->transition_factor = 0.0;
+    state->transitionCicles = 0;
+    strcpy(state->debg, "Nops");
 }
 
 // Function to set the accelerator state
@@ -112,216 +142,456 @@ void set_braking(bool brake) {
     sem_post(sem); // Release the semaphore
 }
 
+int calculateCicleEstimated( SystemState *state ) {
+    double localSpeed = 0;
+    int cicles = 0;
+
+    while(localSpeed <= state->speed) {
+        cicles++;
+        localSpeed = cicles * (1.13 - (0.00162 * cicles));
+        if ( cicles == 350 ) {
+            break;
+        }
+
+    }
+
+    return cicles;
+}
+
 // Function to calculate the current speed based on engine RPM and transition factor
-double calculate_speed(SystemState *state) {
+void calculate_speed(SystemState *state) {
     double fator_variacao = 0.0;
     sem_wait(sem); // Acquire the semaphore
+    
     if (state->accelerator) {
+        ciclesQuantity = calculateCicleEstimated(state);
+        // Calculate speed increase based on RPM of both engines and the transition factor
+        state->speed = ciclesQuantity*(1.13 - (0.00162 * ciclesQuantity));
+        
+        if (state->fuel == 0 && state->speed > 70.0) {
+            state->speed = 70.0;
+        }
+        /*
         // Calculate speed increase based on RPM of both engines and the transition factor
         fator_variacao = (state->rpm_ev * (1.0 - state->transition_factor) + state->rpm_iec * state->transition_factor) * 0.0001;
         state->speed = fmin(state->speed + fator_variacao, MAX_SPEED); // Ensure speed does not exceed the maximum
-    } else if (!state->brake) {
+        */
+    } 
+    
+    else if (!state->brake) {
         // Coasting - apply a slight deceleration
         state->speed = fmax(state->speed - 0.3, MIN_SPEED); // Ensure speed does not go below the minimum
-    } else {
+    } 
+    
+    else {
         // Braking - apply a stronger deceleration
         double fator_variacao_freio = 2.0;
         state->speed = fmax(state->speed - fator_variacao_freio, MIN_SPEED);
     }
-    double current_speed = state->speed;
+
     sem_post(sem); // Release the semaphore
-    return current_speed;
+    
 }
 
 // Function to control the engines based on the current speed and system state
 void vmu_control_engines() {
-    EngineCommand cmd;
+    EngineCommandEV cmdEV;
+    EngineCommandIEC cmdIEC;
+    
     sem_wait(sem); // Acquire the semaphore
     double current_speed = system_state->speed;
     double current_battery = system_state->battery;
     double current_fuel = system_state->fuel;
     bool current_accelerator = system_state->accelerator;
-    sem_post(sem); // Release the semaphore
+    double evPercentage = system_state->evPercentage;
+    double iecPercentage = system_state->iecPercentage;
+
+    if (current_battery == 0.0 && current_fuel == 0.0) {
+        current_accelerator = false;
+        carStop = true;
+    }
+
+    if ( carStop && current_battery >= 100.0 ) {
+        
+        carStop = false;
+
+        system_state->transition_factor = 0.0;
+        cmdEV.globalVelocity = current_speed;
+        cmdEV.power_level = system_state->evPercentage;
+        cmdEV.type = CMD_START;
+        cmdEV.toVMU = false;
+        cmdEV.accelerator = current_accelerator;
+
+        cmdIEC.type = CMD_START;
+        cmdIEC.globalVelocity = current_speed;
+        cmdIEC.power_level = system_state->iecPercentage;
+        cmdIEC.toVMU = false;
+        cmdIEC.ev_on = system_state->ev_on;
+        
+        mq_send(ev_mq, (const char *)&cmdEV, sizeof(cmdEV), 0);
+        mq_send(iec_mq, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
+    }
+
+
+    else if (current_battery > 0.0 && current_fuel == 0.0 && !transitionEV && system_state->evPercentage < 1.0 ) {
+
+        sprintf(system_state->debg, "To no if para tev se fuel 0 %d", cont);
+
+        transitionEV = true;
+
+        system_state->transition_factor = 0.0;
+        cmdEV.globalVelocity = current_speed;
+        cmdEV.power_level = system_state->evPercentage;
+        cmdEV.type = CMD_START;
+        cmdEV.toVMU = false;
+        cmdEV.accelerator = current_accelerator;
+
+        cmdIEC.type = CMD_START;
+        cmdIEC.globalVelocity = current_speed;
+        cmdIEC.power_level = system_state->iecPercentage;
+        cmdIEC.toVMU = false;
+        cmdIEC.ev_on = system_state->ev_on;
+        
+        mq_send(ev_mq, (const char *)&cmdEV, sizeof(cmdEV), 0);
+        mq_send(iec_mq, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
+    }
+    
+    
+    else if (transitionIEC && current_battery == 100) {
+        
+        transitionIEC = false;
+        transitionEV = true;
+        transition = 300;
+    
+    }
+
+    if (transitionEV && system_state->evPercentage < 1.0) {
+
+        sprintf(system_state->debg, "To no if TEV %d", cont);
+
+        evPercentage = system_state->evPercentage;
+        iecPercentage = system_state->iecPercentage;
+
+        if(current_speed <= 70.0 && system_state->fuel > 0.0) {
+            
+            system_state->evPercentage += 0.01;
+            system_state->iecPercentage -= 0.01;
+            system_state->power_mode = 1;
+            
+            if (evPercentage >= 1) {
+    
+                system_state->evPercentage = 1.0;
+                system_state->iecPercentage = 0;
+                system_state->power_mode = 0;
+                
+                transitionEV = false;
+            }
+        }
+        
+        else if (current_speed > 70.0 && system_state->fuel > 0.0) {
+            evTransitionRatio = (70.0/current_speed);
+            iecTransitionRatio = ((current_speed - 70.0)/current_speed);
+        
+            
+            system_state->power_mode = 1;
+            system_state->evPercentage += 0.01;
+            system_state->iecPercentage -= 0.01;
+            
+
+            sprintf(system_state->debg, "To no else (TEV HYB): %d", cont);
+            
+            if(system_state->evPercentage >= evTransitionRatio) {
+            
+                evPercentage = evTransitionRatio;
+                iecPercentage = iecTransitionRatio;
+                transitionEV = false;
+            }
+            
+        }
+
+        else if (system_state->fuel == 0.0 && current_speed > 70.0) {
+            system_state->accelerator = false;
+            if (current_speed*(system_state->evPercentage) <= 70.0) {
+                system_state->power_mode = 1;
+                system_state->evPercentage += 0.01;
+                system_state->iecPercentage -= 0.01;
+            }
+
+            if(system_state->evPercentage == 1.0) {
+                transitionEV = false;
+                system_state->power_mode = 0;
+            } 
+        }
+
+        if (system_state->evPercentage > 0.9) {
+            system_state->evPercentage = 1.0;
+            system_state->iecPercentage = 0.0;
+            system_state->power_mode = 0;
+
+            transitionEV = false;
+        }
+
+        
+        cmdEV.power_level = evPercentage; // EV power decreases as transition factor increases
+        cmdEV.globalVelocity = current_speed;
+        cmdEV.type = CMD_START; 
+        cmdEV.toVMU = false;
+        cmdEV.accelerator = current_accelerator;
+        mq_send(ev_mq, (const char *)&cmdEV, sizeof(cmdEV), 0);
+
+        cmdIEC.power_level = iecPercentage; // IEC power increases as transition factor increases
+        cmdIEC.globalVelocity = current_speed;
+        cmdIEC.type = CMD_START; 
+        cmdIEC.toVMU = false;
+        cmdIEC.ev_on = system_state->ev_on;
+        mq_send(iec_mq, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
+        
+    }
+
 
     // Logic for controlling engine transitions based on speed and user input
-    if (current_speed >= 70 && current_speed <= 90 && current_accelerator && current_battery > 10.0 && current_fuel > 5.0) {
-        sem_wait(sem);
-        // Calculate the transition factor based on the distance from the threshold
-        double distancia_do_limite = fabs(current_speed - TRANSITION_SPEED_THRESHOLD);
-        system_state->transition_factor = distancia_do_limite / (TRANSITION_ZONE_WIDTH / 2.0);
-        system_state->transition_factor = fmin(1.0, fmax(0.0, system_state->transition_factor)); // Clamp the value between 0 and 1
-        double transition_factor = system_state->transition_factor;
-        sem_post(sem);
-        
-        // Send power commands to EV and IEC based on the transition factor
-        cmd.type = CMD_SET_POWER;
-        cmd.power_level = 1.0 - transition_factor; // EV power decreases as transition factor increases
-        mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+    else if ((current_speed > 70.0 && current_battery >= 10.0 && current_fuel >= 0.0) && !transitionEV) {
+        sprintf(system_state->debg, "To no else hybrid padrao for di if %d", cont);
+        if (transitionIEC == false) {
 
-        cmd.type = CMD_SET_POWER;
-        cmd.power_level = transition_factor; // IEC power increases as transition factor increases
-        mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
-        
-        // Start/stop IEC based on the transition factor
-        sem_wait(sem);
-        if (transition_factor > 0.0 && !system_state->iec_on) {
-            cmd.type = CMD_START;
-            mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
-            system_state->iec_on = true;
-        } else if (transition_factor == 0.0 && system_state->iec_on) {
-            cmd.type = CMD_STOP;
-            mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
-            system_state->iec_on = false;
+            float evp = 70.0/current_speed;
+            float iecp = (current_speed - 70.0)/current_speed;
+            // Send power commands to EV and IEC based on the transition factor
+
+            sprintf(system_state->debg, "To no else hybrid padrao %d", cont);
+            
+            system_state->power_mode = 1;
+            system_state->evPercentage = evp;
+            system_state->iecPercentage = iecp;
+            
+
+            cmdEV.power_level = evp; // EV power decreases as transition factor increases
+            cmdEV.globalVelocity = current_speed;
+            cmdEV.type = CMD_START; 
+            cmdEV.toVMU = false;
+            cmdEV.accelerator = current_accelerator;
+            mq_send(ev_mq, (const char *)&cmdEV, sizeof(cmdEV), 0);
+
+            cmdIEC.power_level = (current_speed - 70.0)/current_speed; // IEC power increases as transition factor increases
+            cmdIEC.globalVelocity = current_speed;
+            cmdIEC.type = CMD_START; 
+            cmdIEC.toVMU = false;
+            cmdIEC.ev_on = system_state->ev_on;
+            mq_send(iec_mq, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
+            
         }
         
-        // Start/stop IEC based on the transition factor
-        if (transition_factor < 1.0 && !system_state->ev_on) {
-            cmd.type = CMD_START;
-            mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
-            system_state->ev_on = true;
-        } else if (transition_factor == 1.0 && system_state->ev_on) {
-            cmd.type = CMD_STOP;
-            mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
+        else {
+
+            system_state->power_mode = 2;
+            cmdEV.power_level = 0.0; // EV power decreases as transition factor increases
+            cmdEV.globalVelocity = current_speed;
+            cmdEV.type = CMD_START; 
+            cmdEV.toVMU = false;
+            cmdEV.accelerator = current_accelerator;
+            mq_send(ev_mq, (const char *)&cmdEV, sizeof(cmdEV), 0);
+
+            cmdIEC.power_level = 1.0; // IEC power increases as transition factor increases
+            cmdIEC.globalVelocity = current_speed;
+            cmdIEC.type = CMD_START; 
+            cmdIEC.toVMU = false;
+            cmdIEC.ev_on = system_state->ev_on;
+            mq_send(iec_mq, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
+        }
+          
+    } 
+    
+    else if ((current_speed < 70.0 && current_battery > 10.0)  && !transitionEV) {
+        
+        sprintf(system_state->debg, "else currente speed < 70 fora do if: %d", cont);
+
+        if(transitionIEC == false) {
+            
+            sprintf(system_state->debg, "To no else currente speed < 70: %d", cont);
+
+            
+            system_state->evPercentage = 1.0;
+            system_state->iecPercentage = 0.0;
+            system_state->power_mode = 0.0;
+            
+
+            cmdEV.type = CMD_START;
+            cmdEV.power_level = 1.0;
+            cmdEV.globalVelocity = current_speed;
+            cmdEV.toVMU = false;
+            cmdEV.accelerator = current_accelerator;
+            mq_send(ev_mq, (const char *)&cmdEV, sizeof(cmdEV), 0);
+
+            cmdIEC.type = CMD_STOP;
+            cmdIEC.power_level = 0.0;
+            cmdIEC.globalVelocity = current_speed;
+            cmdIEC.toVMU = false;
+            cmdIEC.ev_on = system_state->ev_on;
+            mq_send(iec_mq, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
+
+        }
+
+        else if (system_state->fuel == 0.0) {
+
+            sprintf(system_state->debg, "To no else currente speed < 70 22: %d", cont);
+            system_state->evPercentage = 1.0;
+            system_state->iecPercentage = 0.0;
+            system_state->power_mode = 0.0;
+            
+
+            cmdEV.type = CMD_START;
+            cmdEV.power_level = 1.0;
+            cmdEV.globalVelocity = current_speed;
+            cmdEV.toVMU = false;
+            cmdEV.accelerator = current_accelerator;
+            mq_send(ev_mq, (const char *)&cmdEV, sizeof(cmdEV), 0);
+
+            cmdIEC.type = CMD_STOP;
+            cmdIEC.power_level = 0.0;
+            cmdIEC.globalVelocity = current_speed;
+            cmdIEC.toVMU = false;
+            cmdIEC.ev_on = system_state->ev_on;
+            mq_send(iec_mq, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
+        }
+
+    } 
+
+    
+    // Emergency mode: If battery is low, switch to IEC if fuel is available
+
+    else if ((current_battery <= 10.0 && current_fuel > 0.0 || (transitionIEC && current_fuel > 0.0)) && !transitionEV) {
+        
+        if (transitionIEC == false) {
+            transitionIEC = true;
+        }
+
+        sprintf(system_state->debg, "To no else TIEC %d", cont);
+            
+        system_state->evPercentage -= 0.01;
+        system_state->iecPercentage += 0.01;
+        system_state->power_mode = 1;
+        
+        if (iecPercentage >= 1) {
+
+            system_state->evPercentage = 0.0;
+            system_state->iecPercentage = 1.0;
+            system_state->power_mode = 2;
             system_state->ev_on = false;
-        }
-        sem_post(sem);
 
-    } else if (current_speed < 70 && current_accelerator && current_battery > 10.0) {
-        // Below transition zone, use only EV
-        sem_wait(sem);
-        system_state->transition_factor = 0.0;
-        sem_post(sem);
-
-        cmd.type = CMD_SET_POWER;
-        cmd.power_level = 1.0;
-        mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
-        cmd.type = CMD_SET_POWER;
-        cmd.power_level = 0.0;
-        mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
-
-        sem_wait(sem);
-        if (!system_state->ev_on) {
-            cmd.type = CMD_START;
-            mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
-            system_state->ev_on = true;
         }
-        if (system_state->iec_on) {
-            cmd.type = CMD_STOP;
-            mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
-            system_state->iec_on = false;
-        }
-        sem_post(sem);
-    } else if (current_speed > TRANSITION_SPEED_THRESHOLD + (TRANSITION_ZONE_WIDTH / 2.0) && current_accelerator && current_fuel > 5.0) {
-        // Above transition zone, use only IEC
-        sem_wait(sem);
-        system_state->transition_factor = 1.0;
-        sem_post(sem);
 
-        cmd.type = CMD_SET_POWER;
-        cmd.power_level = 0.0;
-        mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
-        cmd.type = CMD_SET_POWER;
-        cmd.power_level = 1.0;
-        mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
+        
+        cmdEV.power_level = evPercentage; // EV power decreases as transition factor increases
+        cmdEV.globalVelocity = current_speed;
+        cmdEV.type = CMD_START; 
+        cmdEV.toVMU = false;
+        cmdEV.accelerator = current_accelerator;
+        mq_send(ev_mq, (const char *)&cmdEV, sizeof(cmdEV), 0);
 
-        sem_wait(sem);
-        if (system_state->ev_on) {
-            cmd.type = CMD_STOP;
-            mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
-            system_state->ev_on = false;
-        }
-        if (!system_state->iec_on) {
-            cmd.type = CMD_START;
-            mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
-            system_state->iec_on = true;
-        }
-        sem_post(sem);
+        cmdIEC.power_level = iecPercentage; // IEC power increases as transition factor increases
+        cmdIEC.globalVelocity = current_speed;
+        cmdIEC.type = CMD_START; 
+        cmdIEC.toVMU = false;
+        cmdIEC.ev_on = system_state->ev_on;
+        mq_send(iec_mq, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
+    } 
+
+    else if (current_fuel <= 2.25 && current_battery >= 10.0 && system_state->evPercentage != 1.0) {
+        
+        sprintf(system_state->debg, "To no ultimo else %d", cont);
+
+        transitionEV = true;
+        system_state->evPercentage = 0;
+
+        cmdEV.power_level = system_state->evPercentage;
+        cmdEV.globalVelocity = current_speed;
+        cmdEV.type = CMD_START;
+        cmdEV.toVMU = false;
+        cmdEV.accelerator = current_accelerator;
+        mq_send(ev_mq, (const char *)&cmdEV, sizeof(cmdEV), 0);
+
+        system_state->iecPercentage = 1.0;
+
+        cmdIEC.power_level = system_state->iecPercentage;
+        cmdIEC.globalVelocity = current_speed;
+        cmdIEC.type = CMD_START;
+        cmdIEC.toVMU = false;
+        cmdIEC.ev_on = system_state->ev_on;
+        mq_send(iec_mq, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
+
+        system_state->transitionCicles = 0.0;
+
+        system_state->power_mode = 2;
     }
 
-    // Emergency mode: If battery is low, switch to IEC if fuel is available
-    sem_wait(sem);
-    if (current_battery <= 10.0 && current_speed < TRANSITION_SPEED_THRESHOLD && current_fuel > 5.0 && current_accelerator == true) {
-        system_state->transition_factor = 1.0;
-        cmd.type = CMD_SET_POWER;
-        cmd.power_level = 0.0;
-        mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
-        cmd.type = CMD_SET_POWER;
-        cmd.power_level = 1.0;
-        mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
-        if (system_state->ev_on) {
-            cmd.type = CMD_STOP;
-            mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
-            system_state->ev_on = false;
-        }
-        if (!system_state->iec_on) {
-            cmd.type = CMD_START;
-            mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
-            system_state->iec_on = true;
-        }
-    } else if (current_fuel <= 5.0 && current_speed >= TRANSITION_SPEED_THRESHOLD && current_accelerator == true && current_battery > 10.0) {
-        // Emergency mode: If fuel is low, switch to EV if battery is available
-        system_state->transition_factor = 0.0;
-        cmd.type = CMD_SET_POWER;
-        cmd.power_level = 1.0;
-        mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
-        cmd.type = CMD_SET_POWER;
-        cmd.power_level = 0.0;
-        mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
-        if (!system_state->ev_on) {
-            cmd.type = CMD_START;
-            mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
-            system_state->ev_on = true;
-        }
-        if (system_state->iec_on) {
-            cmd.type = CMD_STOP;
-            mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
-            system_state->iec_on = false;
-        }
-    } else if (current_battery <= 10.0 && current_fuel <= 5.0 && current_accelerator == true) {
+    else {
+
+        sprintf(system_state->debg, "To no ultimo else 2 %d", cont);
+
+        cmdEV.power_level = system_state->evPercentage;
+        cmdEV.globalVelocity = current_speed;
+        cmdEV.type = CMD_START;
+        cmdEV.toVMU = false;
+        cmdEV.accelerator = current_accelerator;
+        mq_send(ev_mq, (const char *)&cmdEV, sizeof(cmdEV), 0);
+
+        cmdIEC.power_level = system_state->iecPercentage;
+        cmdIEC.globalVelocity = current_speed;
+        cmdIEC.type = CMD_START;
+        cmdIEC.toVMU = false;
+        cmdIEC.ev_on = system_state->ev_on;
+        mq_send(iec_mq, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
+    
+    }
+
+/*
+    else if ( current_fuel == 0.0 && current_battery <= 20.0 ) {
+
+        system_state->evPercentage = 0.0;
+
+        cmdEV.power_level = system_state->evPercentage;
+        cmdEV.globalVelocity = current_speed;
+        cmdEV.type = CMD_START;
+        cmdEV.toVMU = false;
+        cmdEV.accelerator = current_accelerator;
+        mq_send(ev_mq, (const char *)&cmdEV, sizeof(cmdEV), 0);
+
+        system_state->iecPercentage = 0.0;
+
+        cmdIEC.power_level = system_state->iecPercentage;
+        cmdIEC.globalVelocity = current_speed;
+        cmdIEC.type = CMD_START;
+        cmdIEC.toVMU = false;
+        cmdIEC.ev_on = system_state->ev_on;
+        mq_send(iec_mq, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
+
+        system_state->transitionCicles = 0;
+
+        system_state->power_mode = 4;
+    }
+*/
+/*
+    else if (current_battery <= 5.0 && current_fuel <= 2.25) {
+
+        system_state->accelerator = false;
+        finish = true;
+   
         // If both battery and fuel are low, stop both engines (for safety or simulation end)
         system_state->transition_factor = 0.0;
-        cmd.type = CMD_SET_POWER;
-        cmd.power_level = 0.0;
-        mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
-        mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
+        cmdEV.type = CMD_SET_POWER;
+        cmdEV.power_level = 0.0;
+        cmdEV.toVMU = false;
+        cmdEV.accelerator = current_accelerator;
+        
+        cmdIEC.type = CMD_SET_POWER;
+        cmdIEC.power_level = 0.0;
+        cmdIEC.toVMU = false;
+        
+        mq_send(ev_mq, (const char *)&cmdEV, sizeof(cmdEV), 0);
+        mq_send(iec_mq, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
         
     }
-
-    // Smoother consumption of battery when EV is on and accelerating
-    if (system_state->ev_on && current_accelerator) {
-        system_state->battery -= 0.2;
-        if (current_battery < 0.0) system_state->battery = 0.0; // Ensure battery doesn't go below 0
-    }
-    if (system_state->iec_on && current_accelerator) {
-        system_state->fuel -= 0.01;
-        if (current_fuel < 0.0) system_state->fuel = 0.0;
-    }
-
-    // Smoother HV battery recharging logic
-    if (system_state->iec_on) {
-        system_state->battery += 0.01; // Recharge slowly when IEC is running
-        if (current_battery > MAX_BATTERY) system_state->battery = MAX_BATTERY; // Ensure battery doesn't exceed max
-    } else if (current_speed > MIN_SPEED && !current_accelerator && !system_state->brake) {
-        system_state->battery += 0.05; // Regenerative recharge during coasting
-        if (current_battery > MAX_BATTERY) system_state->battery = MAX_BATTERY;
-    } else if (system_state->brake && current_speed > MIN_SPEED) {
-        system_state->battery += 0.2; // More aggressive recharge during braking
-        if (current_battery > MAX_BATTERY) system_state->battery = MAX_BATTERY;
-    }
-
-    // Update the power mode based on the engine states
-    if (system_state->ev_on && !system_state->iec_on) {
-        system_state->power_mode = 0; // Electric Only
-    } else if (system_state->ev_on && system_state->iec_on) {
-        system_state->power_mode = 1; // Hybrid
-    } else if (!system_state->ev_on && system_state->iec_on) {
-        system_state->power_mode = 2; // Combustion Only
-    } else if (!system_state->ev_on && !system_state->iec_on && current_speed > MIN_SPEED && system_state->brake) {
-        system_state->power_mode = 3; // Regenerative Braking
-    } else {
-        system_state->power_mode = 4; // Parked (neither engine on, or stopped)
-    }
-
+*/
     sem_post(sem); // Release the semaphore
 }
 
@@ -334,17 +604,17 @@ void *read_input(void *arg) {
         input[strcspn(input, "\n")] = 0;
 
         // Process the user input to control acceleration and braking
-        if (strcmp(input, "0") == 0) {
+        if (strcmp(input, "0") == 0 && !finish) {
             set_braking(false);
             set_acceleration(false);
             sem_wait(sem);
             system_state->iec_on = false;
             system_state->ev_on = false;
             sem_post(sem);
-        } else if (strcmp(input, "1") == 0) {
+        } else if (strcmp(input, "1") == 0 && !finish) {
             set_acceleration(true);
             set_braking(false);
-        } else if (strcmp(input, "2") == 0) {
+        } else if (strcmp(input, "2") == 0 ) {
             set_acceleration(false);
             set_braking(true);
             sem_wait(sem);
@@ -357,36 +627,74 @@ void *read_input(void *arg) {
     return NULL;
 }
 
-unsigned char vmu_check_queue (unsigned char counter, mqd_t mqd) {
+void vmu_check_queue (unsigned char counter, mqd_t mqd, bool ev) {
+    
     unsigned char localcount = 0;
     unsigned char ret;
-    EngineCommand cmd;
+    EngineCommandEV cmdEV;
+    EngineCommandIEC cmdIEC;
+    
     sem_wait(sem);
-    while (mq_receive(mqd, (char *)&cmd, sizeof(cmd), NULL) != -1) {
-        localcount++;
-        if (strcmp(cmd.check, "ok")) {
-            strcpy(lastmsg, "ok");
-            counter = 0;
+    if (ev) {
+        while (mq_receive(mqd, (char *)&cmdEV, sizeof(cmdEV), NULL) != -1) {
+            if (cmdEV.toVMU) {
+                localcount++;
+                strcpy(lastmsg, cmdEV.check);
+                system_state->rpm_ev = cmdEV.rpm_ev;
+                system_state->battery = cmdEV.batteryEV;
+                system_state->ev_on = cmdEV.evActive;  
+                safetyCount = 0;
+            } 
         }
-        else {
-            strcpy(lastmsg, "no");
-            
-        }    
-    }
 
-    if (localcount == 0) {
-        strcpy(lastmsg, "nt");
-        safetyCount++;
-        if (safetyCount == 5) {
-            system_state->safety = true;
+        if (localcount == 0 && cmdEV.toVMU) {
+            strcpy(lastmsg, "nt");
+            safetyCount++;
+            if (safetyCount == 5) {
+                system_state->safety = true;
+            }
+            
         }
         
+        else if (!cmdEV.toVMU) {
+            mq_send(mqd, (const char *)&cmdEV, sizeof(cmdEV), 0);
+        }
+    }
+    
+    else {
+
+        while (mq_receive(mqd, (char *)&cmdIEC, sizeof(cmdIEC), NULL) != -1) {
+            if (cmdIEC.toVMU) {
+                localcount++;
+                strcpy(lastmsg, cmdIEC.check);
+                system_state->rpm_iec = cmdIEC.rpm_iec;
+                system_state->fuel = cmdIEC.fuelIEC;
+                system_state->iec_on = cmdIEC.iecActive;
+                safetyCount = 0;
+            } 
+        }
+
+        if (localcount == 0 && cmdIEC.toVMU) {
+            strcpy(lastmsg, "nt");
+            safetyCount++;
+            if (safetyCount == 5) {
+                system_state->safety = true;
+            }
+            
+        }
+
+        else if (!cmdIEC.toVMU) {
+            mq_send(mqd, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
+        }
     }
     sem_post(sem);
-    return counter;
+
 }
 
 int main() {
+
+    struct timeval start, end;
+
     // Configure signal handlers for graceful shutdown and pause
     signal(SIGUSR1, handle_signal);
     signal(SIGINT, handle_signal);
@@ -395,9 +703,14 @@ int main() {
     unsigned char counterEV = 0;
     unsigned char counterIEC = 0;
 
-    EngineCommand cmd;
+    EngineCommandEV cmdEV;
+    EngineCommandIEC cmdIEC;
+
 
     strcpy(lastmsg, "");
+
+    shm_unlink(SHARED_MEM_NAME); 
+
     // Configuration of shared memory for VMU
     int shm_fd = shm_open(SHARED_MEM_NAME, O_CREAT | O_RDWR, 0666);
     if (shm_fd == -1) {
@@ -417,7 +730,9 @@ int main() {
         perror("[VMU] Error mapping shared memory");
         exit(EXIT_FAILURE);
     }
-    close(shm_fd);
+    
+
+    sem_unlink(SEMAPHORE_NAME);
 
     // Create semaphore for synchronization
     sem = sem_open(SEMAPHORE_NAME, O_CREAT, 0666, 1);
@@ -429,11 +744,13 @@ int main() {
     // Initialize system state
     init_system_state(system_state);
 
+    mq_unlink(EV_COMMAND_QUEUE_NAME);
+
     // Configuration of POSIX message queues for communication with the EV module
     struct mq_attr ev_mq_attributes;
     ev_mq_attributes.mq_flags = 0;
     ev_mq_attributes.mq_maxmsg = 10;
-    ev_mq_attributes.mq_msgsize = sizeof(EngineCommand);
+    ev_mq_attributes.mq_msgsize = sizeof(EngineCommandEV);
     ev_mq_attributes.mq_curmsgs = 0;
 
     ev_mq = mq_open(EV_COMMAND_QUEUE_NAME, O_RDWR| O_CREAT | O_NONBLOCK, 0666, &ev_mq_attributes);
@@ -446,11 +763,13 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
+    mq_unlink(IEC_COMMAND_QUEUE_NAME);
+
     // Configuration of POSIX message queues for communication with the IEC module
     struct mq_attr iec_mq_attributes;
     iec_mq_attributes.mq_flags = 0;
     iec_mq_attributes.mq_maxmsg = 10;
-    iec_mq_attributes.mq_msgsize = sizeof(EngineCommand);
+    iec_mq_attributes.mq_msgsize = sizeof(EngineCommandIEC);
     iec_mq_attributes.mq_curmsgs = 0;
 
     iec_mq = mq_open(IEC_COMMAND_QUEUE_NAME, O_RDWR | O_CREAT | O_NONBLOCK, 0666, &iec_mq_attributes);
@@ -473,38 +792,47 @@ int main() {
         perror("[VMU] Error creating input thread");
         running = 0; // Exit main loop if thread creation fails
     }
+ 
+    system_state->transitionCicles = 0;
 
-    vmu_control_engines(); 
-    calculate_speed(system_state); 
-
-    // Initialize bilateral communication with ev (important to vmu_check_queue_function work correctly)
-    while ((mq_receive(ev_mq, (char *)&cmd, sizeof(cmd), NULL) == -1)){
-        
-    }
-
-    // Initialize bilateral communication with iec (important to vmu_check_queue_function work correctly)
-    while ((mq_receive(iec_mq, (char *)&cmd, sizeof(cmd), NULL) == -1)){
-        
-    }
+    printf("\n\nVMU Module Running Debug 1\n");
     
+    printf("\n\nVMU Module Running Debug 3\n");
+
     // Main loop of the VMU module
     while (running) {
         if (!paused) {
-            counterEV = vmu_check_queue(counterEV, ev_mq);
-            counterIEC = vmu_check_queue(counterIEC, iec_mq);
-            vmu_control_engines(); // Control the engines based on the system state
-            calculate_speed(system_state); // Calculate the current speed
+            
+            gettimeofday(&start, NULL);
+            
+            vmu_control_engines(); 
+            calculate_speed(system_state);
+            vmu_check_queue(counterEV, ev_mq, true);
+            vmu_check_queue(counterIEC, iec_mq, false);
             display_status(system_state);  // Display the current system status
-            usleep(200000); // Sleep for 200 milliseconds
+
+            gettimeofday(&end, NULL);
+
+            elapsed = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) / 1000;
+
+            if (elapsed < 100) {
+                delay_ms = 100 - elapsed;
+                // Converte delay_ms para microsegundos e faz o delay
+                usleep(delay_ms * 1000);
+            }
+            
         } else {
             sleep(1); // Sleep for 1 second if paused
         }
     }
 
     // Cleanup resources before exiting
-    cmd.type = CMD_END;
-    mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
-    mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
+    cmdEV.type = CMD_END;
+    cmdIEC.type = CMD_END;
+    cmdEV.toVMU = false;
+    cmdIEC.toVMU = false;
+    mq_send(ev_mq, (const char *)&cmdEV, sizeof(cmdEV), 0);
+    mq_send(iec_mq, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
     pthread_cancel(input_thread); // Request the input thread to terminate
     pthread_join(input_thread, NULL); // Wait for the input thread to finish
 

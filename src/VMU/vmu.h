@@ -42,7 +42,11 @@ typedef struct {
     double fuel;    
     int power_mode; // 0: Hybrid, 1: Electric Only, 2: Combustion Only, 3: Regenerative Braking, 4: Parked
     double transition_factor;
+    unsigned char transitionCicles;
     bool startComunication;
+    float evPercentage;
+    float iecPercentage;
+    char debg[45];
 } SystemState;
 
 // Structure for messages (if needed for communication beyond commands)
@@ -63,8 +67,28 @@ typedef enum {
 typedef struct {
     CommandType type;
     double power_level;
-    char check[2];
-} EngineCommand;
+    char check[30];
+    double batteryEV;
+    double globalVelocity;
+    bool evActive;
+    double rpm_ev;
+    bool toVMU;
+    bool accelerator;
+} EngineCommandEV;
+
+// Structure for engine commands
+typedef struct {
+    CommandType type;
+    double power_level;
+    char check[3];
+    double fuelIEC;
+    double temperatureIEC;
+    double globalVelocity;
+    bool iecActive;
+    double rpm_iec;
+    bool toVMU;
+    bool ev_on;
+} EngineCommandIEC;
 
 // Signal handler function (prototype)
 void handle_signal(int sig);
