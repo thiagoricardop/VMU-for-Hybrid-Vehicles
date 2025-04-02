@@ -48,25 +48,53 @@ void handle_signal(int sig) {
 
 // Function to display the current state of the system
 void display_status(const SystemState *state) {
-    system("clear");
-    printf("=== Estado do Sistema ===\n");
+    printf("\033[H"); 
+    printf("\n\n=== Estado do Sistema ===\n");
+
+    printf("\033[2; 5H"); 
     printf("Speed: %.2f km/h\n", state->speed);
+
+    printf("\033[3; 5H"); 
     printf("RPM EV: %d\n", state->rpm_ev);
+
+    printf("\033[4; 5H"); 
     printf("RPM IEC: %d\n", state->rpm_iec);
+
+    printf("\033[5; 5H"); 
     printf("EV: %s\n", state->ev_on ? "ON" : "OFF");
+
+    printf("\033[6; 5H"); 
     printf("IEC: %s\n", state->iec_on ? "ON" : "OFF");
+
+    printf("\033[7; 5H"); 
     printf("Temperature EV: %.2f C\n", state->temp_ev);
+
+    printf("\033[8; 5H"); 
     printf("Temperature IEC: %.2f C\n", state->temp_iec);
+
+    printf("\033[9; 5H"); 
     printf("Battery: %.2f%%\n", state->battery);
+
+    printf("\033[10; 5H"); 
     printf("Fuel: %.2f%%\n", state->fuel);
+
+    printf("\033[11; 5H"); 
     printf("Power mode: %s\n", 
            state->power_mode == 0 ? "Electric Only" : 
            state->power_mode == 1 ? "Hybrid" : 
            state->power_mode == 2 ? "Combustion Only" :
            state->power_mode == 3 ? "Regenerative Braking" : "Parked");
+
+    printf("\033[12; 5H"); 
     printf("Accelerator: %s\n", state->accelerator ? "ON" : "OFF");
+
+    printf("\033[13; 5H"); 
     printf("Brake: %s\n", state->brake ? "ON" : "OFF");
+
+    printf("\033[14; 5H"); 
     printf("\nType `1` for accelerate, `2` for brake, or `0` for none, and press Enter:\n");
+
+    fflush(stdout); // Garante que a saída seja atualizada imediatamente
 }
 
 // Function to initialize the system state
@@ -425,8 +453,6 @@ int main() {
         sem_unlink(SEMAPHORE_NAME);
         exit(EXIT_FAILURE);
     }
-
-    printf("VMU Module Running\n");
 
     // Create a separate thread to read user input for pedal control
     pthread_t input_thread;
