@@ -454,6 +454,8 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
+    printf("VMU Module Running\n");
+
     // Create a separate thread to read user input for pedal control
     pthread_t input_thread;
     if (pthread_create(&input_thread, NULL, read_input, NULL) != 0) {
