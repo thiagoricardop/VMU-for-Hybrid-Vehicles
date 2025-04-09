@@ -21,11 +21,11 @@ sem_t *sem;                // Pointer to the semaphore for synchronizing access 
 mqd_t iec_mq;     // Message queue descriptor for receiving commands for the IEC module
 volatile sig_atomic_t running = 1; // Flag to control the main loop, volatile to ensure visibility across threads
 volatile sig_atomic_t paused = 0;  // Flag to indicate if the simulation is paused
-double fuel = 0.2;
+double fuel = 45.0;
 double iecPercentage = 0.0;
 double localVelocity = 0.0;
 bool iecActive = false;
-double iecRPM = 0;
+double iecRPM = 0.0;
 const double averageConsumeKMl = 14.7;
 const float gearRatio[5] = {3.83, 2.36, 1.69, 1.31, 1.0};
 double tireCircunferenceRatio = 2.19912;
@@ -62,27 +62,24 @@ void calculateValues() {
         gear = 5;
     }
     
-    if (localVelocity >= 70.0 && iecActive) {
-        fuel -= iecPercentage*(localVelocity/(averageConsumeKMl*36000.0));
-        iecRPM = ((localVelocity*16.67)/tireCircunferenceRatio)*(gearRatio[gear-1] * 3.55); 
-    }
+    if ( iecActive && fuel > 0.0) {
+        if (fuel > 0.0) {
+            fuel -= iecPercentage*(localVelocity/(averageConsumeKMl*36000.0));
+            if (fuel < 0.0) {
+                fuel == 0.0;
+            }    
+        }
 
-    else if ( localVelocity< 70.0 && !ev_on && iecActive ) {
-        fuel -= iecPercentage*(localVelocity/(averageConsumeKMl*36000.0));
-        iecRPM = ((localVelocity*16.67)/tireCircunferenceRatio)*(gearRatio[gear-1] * 3.55); 
     }
 
     else if (!iecActive) {
         iecRPM = 0.0;
     }
 
-    if (fuel > 0.0) {
-        fuel -= iecPercentage*(localVelocity/(averageConsumeKMl*36000.0));
+    if (iecActive) {
+        iecRPM = ((localVelocity*16.67)/tireCircunferenceRatio)*(gearRatio[gear-1] * 3.55); 
     }
 
-    else {
-        fuel = 0.0;
-    }
 }
 
 int main() {
@@ -145,13 +142,7 @@ int main() {
                 // Process the received command
                 switch (cmd.type) {
                     case CMD_START:
-                        if (fuel >= 5) {
-                            system_state->iec_on = true;
-                            strcpy(cmd.check, "ok");
-                        }
-                        else {
-                            strcpy(cmd.check, "no");
-                        }
+
                         break;
                     case CMD_STOP:
                         system_state->iec_on = false;

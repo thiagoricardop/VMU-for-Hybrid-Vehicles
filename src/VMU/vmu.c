@@ -78,9 +78,9 @@ void handle_signal(int sig) {
 void display_status(const SystemState *state) {
     system("clear");
     printf("=== Estado do Sistema ===\n");
-    printf("Speed: %.2f km/h\n", state->speed);
-    printf("RPM EV: %d\n", state->rpm_ev);
-    printf("RPM IEC: %d\n", state->rpm_iec);
+    printf("Speed: %f km/h\n", state->speed);
+    printf("RPM EV: %f\n", state->rpm_ev);
+    printf("RPM IEC: %f\n", state->rpm_iec);
     printf("Eletric engine ratio: %f \n", state->evPercentage);
     printf("Combustion engine ratio: %f \n", state->iecPercentage);
     printf("EV: %s\n", state->ev_on ? "ON" : "OFF");
@@ -147,11 +147,13 @@ int calculateCicleEstimated( SystemState *state ) {
     int cicles = 0;
 
     while(localSpeed <= state->speed) {
-        cicles++;
+        
         localSpeed = cicles * (1.13 - (0.00162 * cicles));
         if ( cicles == 350 ) {
             break;
         }
+
+        cicles++;
 
     }
 
@@ -265,7 +267,46 @@ void vmu_control_engines() {
     
     }
 
-    if (transitionEV && system_state->evPercentage < 1.0) {
+    if (transitionIEC) {
+
+        sprintf(system_state->debg, "To no else TIEC %d", cont);
+            
+        system_state->evPercentage -= 0.005;
+        system_state->iecPercentage += 0.005;
+        system_state->power_mode = 1;
+
+        if (system_state->evPercentage*((current_speed * 16.67) / 2.19912) > 530.321339) {
+            system_state->evPercentage = 530.321339 / ((current_speed * 16.67) / 2.19912);
+            system_state->iecPercentage = 1 - system_state->evPercentage;
+        }
+        
+        
+        if (iecPercentage >= 1) {
+
+            system_state->evPercentage = 0.0;
+            system_state->iecPercentage = 1.0;
+            system_state->power_mode = 2;
+            system_state->ev_on = false;
+
+        }
+
+        
+        cmdEV.power_level = evPercentage; // EV power decreases as transition factor increases
+        cmdEV.globalVelocity = current_speed;
+        cmdEV.type = CMD_START; 
+        cmdEV.toVMU = false;
+        cmdEV.accelerator = current_accelerator;
+        mq_send(ev_mq, (const char *)&cmdEV, sizeof(cmdEV), 0);
+
+        cmdIEC.power_level = iecPercentage; // IEC power increases as transition factor increases
+        cmdIEC.globalVelocity = current_speed;
+        cmdIEC.type = CMD_START; 
+        cmdIEC.toVMU = false;
+        cmdIEC.ev_on = system_state->ev_on;
+        mq_send(iec_mq, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
+    }
+
+    else if (transitionEV && system_state->evPercentage < 1.0) {
 
         sprintf(system_state->debg, "To no if TEV %d", cont);
 
@@ -274,9 +315,15 @@ void vmu_control_engines() {
 
         if(current_speed <= 70.0 && system_state->fuel > 0.0) {
             
-            system_state->evPercentage += 0.01;
-            system_state->iecPercentage -= 0.01;
+            system_state->evPercentage += 0.005;
+            system_state->iecPercentage -= 0.005;
             system_state->power_mode = 1;
+
+            if (system_state->evPercentage*((current_speed * 16.67) / 2.19912) > 530.321339) {
+                system_state->evPercentage = 530.321339 / ((current_speed * 16.67) / 2.19912);
+                system_state->iecPercentage = 1 - system_state->evPercentage;
+            }
+            
             
             if (evPercentage >= 1) {
     
@@ -294,8 +341,9 @@ void vmu_control_engines() {
         
             
             system_state->power_mode = 1;
-            system_state->evPercentage += 0.01;
-            system_state->iecPercentage -= 0.01;
+            system_state->evPercentage += 0.005;
+            system_state->iecPercentage -= 0.005;
+            
             
 
             sprintf(system_state->debg, "To no else (TEV HYB): %d", cont);
@@ -313,9 +361,14 @@ void vmu_control_engines() {
             system_state->accelerator = false;
             if (current_speed*(system_state->evPercentage) <= 70.0) {
                 system_state->power_mode = 1;
-                system_state->evPercentage += 0.01;
-                system_state->iecPercentage -= 0.01;
+                system_state->evPercentage += 0.005;
+                system_state->iecPercentage -= 0.005;
             }
+
+            if (system_state->evPercentage*((current_speed * 16.67) / 2.19912) > 530.321339) {
+                system_state->evPercentage = 530.321339 / ((current_speed * 16.67) / 2.19912);
+                system_state->iecPercentage = 1 - system_state->evPercentage;
+            }    
 
             if(system_state->evPercentage == 1.0) {
                 transitionEV = false;
@@ -350,7 +403,7 @@ void vmu_control_engines() {
 
 
     // Logic for controlling engine transitions based on speed and user input
-    else if ((current_speed > 70.0 && current_battery >= 10.0 && current_fuel >= 0.0) && !transitionEV) {
+    else if (current_speed > 70.0 && current_battery >= 10.0 && current_fuel >= 0.0 && !transitionEV && !transitionIEC) {
         sprintf(system_state->debg, "To no else hybrid padrao for di if %d", cont);
         if (transitionIEC == false) {
 
@@ -467,9 +520,14 @@ void vmu_control_engines() {
 
         sprintf(system_state->debg, "To no else TIEC %d", cont);
             
-        system_state->evPercentage -= 0.01;
-        system_state->iecPercentage += 0.01;
+        system_state->evPercentage -= 0.005;
+        system_state->iecPercentage += 0.005;
         system_state->power_mode = 1;
+
+        if (system_state->evPercentage*((current_speed * 16.67) / 2.19912) > 530.321339) {
+            system_state->evPercentage = 530.321339 / ((current_speed * 16.67) / 2.19912);
+            system_state->iecPercentage = 1 - system_state->evPercentage;
+        }
         
         if (iecPercentage >= 1) {
 
@@ -544,54 +602,6 @@ void vmu_control_engines() {
     
     }
 
-/*
-    else if ( current_fuel == 0.0 && current_battery <= 20.0 ) {
-
-        system_state->evPercentage = 0.0;
-
-        cmdEV.power_level = system_state->evPercentage;
-        cmdEV.globalVelocity = current_speed;
-        cmdEV.type = CMD_START;
-        cmdEV.toVMU = false;
-        cmdEV.accelerator = current_accelerator;
-        mq_send(ev_mq, (const char *)&cmdEV, sizeof(cmdEV), 0);
-
-        system_state->iecPercentage = 0.0;
-
-        cmdIEC.power_level = system_state->iecPercentage;
-        cmdIEC.globalVelocity = current_speed;
-        cmdIEC.type = CMD_START;
-        cmdIEC.toVMU = false;
-        cmdIEC.ev_on = system_state->ev_on;
-        mq_send(iec_mq, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
-
-        system_state->transitionCicles = 0;
-
-        system_state->power_mode = 4;
-    }
-*/
-/*
-    else if (current_battery <= 5.0 && current_fuel <= 2.25) {
-
-        system_state->accelerator = false;
-        finish = true;
-   
-        // If both battery and fuel are low, stop both engines (for safety or simulation end)
-        system_state->transition_factor = 0.0;
-        cmdEV.type = CMD_SET_POWER;
-        cmdEV.power_level = 0.0;
-        cmdEV.toVMU = false;
-        cmdEV.accelerator = current_accelerator;
-        
-        cmdIEC.type = CMD_SET_POWER;
-        cmdIEC.power_level = 0.0;
-        cmdIEC.toVMU = false;
-        
-        mq_send(ev_mq, (const char *)&cmdEV, sizeof(cmdEV), 0);
-        mq_send(iec_mq, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
-        
-    }
-*/
     sem_post(sem); // Release the semaphore
 }
 
@@ -671,6 +681,16 @@ void vmu_check_queue (unsigned char counter, mqd_t mqd, bool ev) {
                 system_state->fuel = cmdIEC.fuelIEC;
                 system_state->iec_on = cmdIEC.iecActive;
                 safetyCount = 0;
+                
+                if (system_state->fuel < 0.0) {
+                    system_state->fuel = 0.0;
+                    
+                    if (system_state->speed >= 70.0) {
+                        system_state->accelerator = false;
+                        
+                    } 
+                }
+
             } 
         }
 
@@ -806,10 +826,10 @@ int main() {
             gettimeofday(&start, NULL);
             
             vmu_control_engines(); 
-            calculate_speed(system_state);
             vmu_check_queue(counterEV, ev_mq, true);
             vmu_check_queue(counterIEC, iec_mq, false);
             display_status(system_state);  // Display the current system status
+            calculate_speed(system_state);
 
             gettimeofday(&end, NULL);
 

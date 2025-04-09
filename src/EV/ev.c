@@ -21,7 +21,7 @@ sem_t *sem;                // Pointer to the semaphore for synchronizing access 
 mqd_t ev_mq;      // Message queue descriptor for receiving commands for the EV module
 volatile sig_atomic_t running = 1; // Flag to control the main loop, volatile to ensure visibility across threads
 volatile sig_atomic_t paused = 0;  // Flag to indicate if the simulation is paused
-double BatteryEV = 100.0;
+double BatteryEV = 10.8;
 double evPercentage = 0.0;
 bool firstReceive = true;
 double localVelocity = 0.0;
@@ -50,7 +50,7 @@ void calculateValues () {
         BatteryEV += 1.0;
     }
 
-    else if (evActive) {
+    else if (evActive && localVelocity > 0.0) {
         BatteryEV -= 0.01;
     }
 
@@ -65,6 +65,10 @@ void calculateValues () {
     
     rpmEV = evPercentage*((localVelocity * 16.67) / tireCircunferenceRatio);
     
+    /*
+    if (rpmEV > 530.321339) {
+        rpmEV = 530.321339;
+    } */
 }
 
 int main() {

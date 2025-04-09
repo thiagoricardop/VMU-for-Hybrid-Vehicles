@@ -31,8 +31,8 @@ typedef struct {
     bool accelerator;
     bool brake;
     double speed;
-    int rpm_ev;
-    int rpm_iec;
+    double rpm_ev;
+    double rpm_iec;
     bool ev_on;
     bool iec_on;
     bool safety;
@@ -44,8 +44,8 @@ typedef struct {
     double transition_factor;
     unsigned char transitionCicles;
     bool startComunication;
-    float evPercentage;
-    float iecPercentage;
+    double evPercentage;
+    double iecPercentage;
     char debg[45];
 } SystemState;
 
