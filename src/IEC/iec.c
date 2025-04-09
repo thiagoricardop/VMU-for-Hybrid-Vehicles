@@ -55,7 +55,7 @@ void calculateValues() {
     else if (localVelocity <= 40.0) {
         gear = 3;
     }
-    else if (localVelocity <= 60.0) {
+    else if (localVelocity <= 70.0) {
         gear = 4;
     }
     else {

@@ -74,6 +74,7 @@ void handle_signal(int sig) {
     }
 }
 
+
 // Function to display the current state of the system
 void display_status(const SystemState *state) {
     system("clear");
