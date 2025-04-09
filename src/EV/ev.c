@@ -21,7 +21,7 @@ sem_t *sem;                // Pointer to the semaphore for synchronizing access 
 mqd_t ev_mq;      // Message queue descriptor for receiving commands for the EV module
 volatile sig_atomic_t running = 1; // Flag to control the main loop, volatile to ensure visibility across threads
 volatile sig_atomic_t paused = 0;  // Flag to indicate if the simulation is paused
-double BatteryEV = 10.8;
+double BatteryEV = 11.0;
 double evPercentage = 0.0;
 bool firstReceive = true;
 double localVelocity = 0.0;
