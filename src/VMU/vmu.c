@@ -48,25 +48,33 @@ void handle_signal(int sig) {
 
 // Function to display the current state of the system
 void display_status(const SystemState *state) {
-    system("clear");
-    printf("=== Estado do Sistema ===\n");
-    printf("Speed: %.2f km/h\n", state->speed);
-    printf("RPM EV: %d\n", state->rpm_ev);
+    printf("\033[H"); 
+    printf("\n\n=== System State ===\n");
+    printf("Speed: %06.2f km/h\n", state->speed);
+    printf("RPM EV: %d\n", state->rpm_ev); 
     printf("RPM IEC: %d\n", state->rpm_iec);
-    printf("EV: %s\n", state->ev_on ? "ON" : "OFF");
-    printf("IEC: %s\n", state->iec_on ? "ON" : "OFF");
+    printf("EV Activated: %s\n", state->ev_on ? "Y" : "N");
+    printf("IEC Activated: %s\n", state->iec_on ? "Y" : "N");
     printf("Temperature EV: %.2f C\n", state->temp_ev);
     printf("Temperature IEC: %.2f C\n", state->temp_iec);
-    printf("Battery: %.2f%%\n", state->battery);
+    printf("Battery: %.2f%%\n", state->battery); 
     printf("Fuel: %.2f%%\n", state->fuel);
+
     printf("Power mode: %s\n", 
-           state->power_mode == 0 ? "Electric Only" : 
-           state->power_mode == 1 ? "Hybrid" : 
-           state->power_mode == 2 ? "Combustion Only" :
-           state->power_mode == 3 ? "Regenerative Braking" : "Parked");
-    printf("Accelerator: %s\n", state->accelerator ? "ON" : "OFF");
-    printf("Brake: %s\n", state->brake ? "ON" : "OFF");
+           state->power_mode == 0 ? "E" : 
+           state->power_mode == 1 ? "H" : 
+           state->power_mode == 2 ? "C" :
+           state->power_mode == 3 ? "R" : "P");
+    
+    printf("Accelerator Activated: %s\n", state->accelerator ? "Y" : "N"); 
+    printf("Brake Activated: %s\n", state->brake ? "Y" : "N");
+
+
+    printf("\nLabels - Power mode");
+    printf("\nE -> Electric Only\nH -> Hybrid\nC -> Combustion Only\nR -> Regenerative Braking\nP -> Parked");
     printf("\nType `1` for accelerate, `2` for brake, or `0` for none, and press Enter:\n");
+
+    fflush(stdout); // Garante que a saída seja atualizada imediatamente
 }
 
 // Function to initialize the system state
