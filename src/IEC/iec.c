@@ -21,7 +21,7 @@ sem_t *sem;                // Pointer to the semaphore for synchronizing access 
 mqd_t iec_mq;     // Message queue descriptor for receiving commands for the IEC module
 volatile sig_atomic_t running = 1; // Flag to control the main loop, volatile to ensure visibility across threads
 volatile sig_atomic_t paused = 0;  // Flag to indicate if the simulation is paused
-double fuel = 0.08;
+double fuel = 0.06;
 double iecPercentage = 0.0;
 double localVelocity = 0.0;
 bool iecActive = false;

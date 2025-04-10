@@ -40,7 +40,7 @@ typedef struct {
     double temp_iec;
     double battery; 
     double fuel;    
-    int power_mode; // 0: Hybrid, 1: Electric Only, 2: Combustion Only, 3: Regenerative Braking, 4: Parked
+    int power_mode; // 0: Electric Only, 1: Hybrid, 2: Combustion Only, 3: Regenerative Braking, 4: Parked
     double transition_factor;
     unsigned char transitionCicles;
     bool startComunication;
