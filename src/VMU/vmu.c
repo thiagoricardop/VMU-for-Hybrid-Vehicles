@@ -32,6 +32,8 @@ To shut down the system, press `Ctrl+C` on vmu terminal.
 SystemState *system_state; // Pointer to the shared memory structure holding the system state
 sem_t *sem;                // Pointer to the semaphore for synchronizing access to shared memory
 mqd_t ev_mq, iec_mq;      // Message queue descriptors for communication with EV and IEC modules
+// Create a separate thread to read user input for pedal control
+pthread_t input_thread;
 volatile sig_atomic_t running = 1; // Flag to control the main loop, volatile to ensure visibility across threads
 volatile sig_atomic_t paused = 0;  // Flag to indicate if the simulation is paused
 
@@ -329,44 +331,13 @@ void vmu_control_engines() {
     sem_post(sem); // Release the semaphore
 }
 
-// Function to read user input for pedal control in a separate thread
-void *read_input(void *arg) {
-    char input[10];
-    while (running) {
-        fgets(input, sizeof(input), stdin);
-        // Remove trailing newline character from input
-        input[strcspn(input, "\n")] = 0;
-
-        // Process the user input to control acceleration and braking
-        if (strcmp(input, "0") == 0) {
-            set_braking(false);
-            set_acceleration(false);
-            sem_wait(sem);
-            system_state->iec_on = false;
-            system_state->ev_on = false;
-            sem_post(sem);
-        } else if (strcmp(input, "1") == 0) {
-            set_acceleration(true);
-            set_braking(false);
-        } else if (strcmp(input, "2") == 0) {
-            set_acceleration(false);
-            set_braking(true);
-            sem_wait(sem);
-            system_state->iec_on = false;
-            system_state->ev_on = false;
-            sem_post(sem);
-        }
-        usleep(10000); // Small delay to avoid busy-waiting
-    }
-    return NULL;
-}
-
-int main() {
+// Function to initialize communication with EV and IEC modules
+void init_communication(){
     // Configure signal handlers for graceful shutdown and pause
     signal(SIGUSR1, handle_signal);
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
-
+    
     // Configuration of shared memory for VMU
     int shm_fd = shm_open(SHARED_MEM_NAME, O_CREAT | O_RDWR, 0666);
     if (shm_fd == -1) {
@@ -436,25 +407,14 @@ int main() {
 
     printf("VMU Module Running\n");
 
-    // Create a separate thread to read user input for pedal control
-    pthread_t input_thread;
+    
     if (pthread_create(&input_thread, NULL, read_input, NULL) != 0) {
         perror("[VMU] Error creating input thread");
         running = 0; // Exit main loop if thread creation fails
     }
+}
 
-    // Main loop of the VMU module
-    while (running) {
-        if (!paused) {
-            vmu_control_engines(); // Control the engines based on the system state
-            calculate_speed(system_state); // Calculate the current speed
-            display_status(system_state);  // Display the current system status
-            usleep(200000); // Sleep for 200 milliseconds
-        } else {
-            sleep(1); // Sleep for 1 second if paused
-        }
-    }
-
+void cleanup() {
     // Cleanup resources before exiting
     EngineCommand cmd;
     cmd.type = CMD_END;
@@ -473,5 +433,37 @@ int main() {
     sem_unlink(SEMAPHORE_NAME);
 
     printf("[VMU] Shut down complete.\n");
-    return 0;
 }
+
+// Function to read user input for pedal control in a separate thread
+void *read_input(void *arg) {
+    char input[10];
+    while (running) {
+        fgets(input, sizeof(input), stdin);
+        // Remove trailing newline character from input
+        input[strcspn(input, "\n")] = 0;
+
+        // Process the user input to control acceleration and braking
+        if (strcmp(input, "0") == 0) {
+            set_braking(false);
+            set_acceleration(false);
+            sem_wait(sem);
+            system_state->iec_on = false;
+            system_state->ev_on = false;
+            sem_post(sem);
+        } else if (strcmp(input, "1") == 0) {
+            set_acceleration(true);
+            set_braking(false);
+        } else if (strcmp(input, "2") == 0) {
+            set_acceleration(false);
+            set_braking(true);
+            sem_wait(sem);
+            system_state->iec_on = false;
+            system_state->ev_on = false;
+            sem_post(sem);
+        }
+        usleep(10000); // Small delay to avoid busy-waiting
+    }
+    return NULL;
+}
+

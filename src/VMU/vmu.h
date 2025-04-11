@@ -63,13 +63,22 @@ typedef struct {
     double power_level;
 } EngineCommand;
 
-// Signal handler function (prototype)
+// Function prototypes
+void set_acceleration(bool accelerate);
+void set_braking(bool brake);
+double calculate_speed(SystemState *state);
+void vmu_control_engines();
+void init_system_state(SystemState *state);
+void display_status(const SystemState *state);
+void init_communication();
+void cleanup();
+void *read_input(void *arg);
 void handle_signal(int sig);
 
-// Function to display system status
-void display_status(const SystemState *state);
-
-// Function to initialize system state
-void init_system_state();
+// Declare global variables as extern
+extern SystemState *system_state;
+extern sem_t *sem;
+extern mqd_t ev_mq;
+extern mqd_t iec_mq;
 
 #endif

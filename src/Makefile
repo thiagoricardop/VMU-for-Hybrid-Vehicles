@@ -1,25 +1,21 @@
 CC = gcc
-CFLAGS = -pthread -lrt -lm
-VMU_DIR = VMU
-IEC_DIR = IEC
-EV_DIR = EV
-BIN_DIR = bin
-OBJS = $(VMU_DIR)/vmu.o $(IEC_DIR)/iec.o $(EV_DIR)/ev.o
-EXECS = $(BIN_DIR)/vmu $(BIN_DIR)/ev $(BIN_DIR)/iec
+CFLAGS = -pthread -lrt -lm -I. -I./vmu -I./ev -I./iec
+BINDIR = bin
+EXECS = $(BINDIR)/vmu $(BINDIR)/ev $(BINDIR)/iec
 
-all: $(BIN_DIR) $(EXECS)
+all: $(EXECS)
 
-$(BIN_DIR):
-	mkdir -p $(BIN_DIR)
+$(BINDIR):
+	mkdir -p $(BINDIR)
 
-$(BIN_DIR)/vmu: $(VMU_DIR)/vmu.c $(VMU_DIR)/vmu.h
-	$(CC) $(VMU_DIR)/vmu.c -o $(BIN_DIR)/vmu $(CFLAGS)
+$(BINDIR)/vmu: | $(BINDIR)
+	$(CC) vmu/main.c vmu/vmu.h -o $(BINDIR)/vmu $(CFLAGS)
 
-$(BIN_DIR)/ev: $(EV_DIR)/ev.c $(VMU_DIR)/vmu.h
-	$(CC) $(EV_DIR)/ev.c -o $(BIN_DIR)/ev $(CFLAGS)
+$(BINDIR)/ev: | $(BINDIR)
+	$(CC) ev/main.c ev/ev.h -o $(BINDIR)/ev $(CFLAGS)
 
-$(BIN_DIR)/iec: $(IEC_DIR)/iec.c $(VMU_DIR)/vmu.h
-	$(CC) $(IEC_DIR)/iec.c -o $(BIN_DIR)/iec $(CFLAGS)
+$(BINDIR)/iec: | $(BINDIR)
+	$(CC) iec/main.c iec/iec.h -o $(BINDIR)/iec $(CFLAGS)
 
 clean:
-	rm -rf $(BIN_DIR)
+	rm -f $(EXECS)
