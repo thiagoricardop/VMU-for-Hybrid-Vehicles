@@ -12,7 +12,7 @@
 #include <errno.h>
 #include <math.h>
 #include "iec.h"
-#include "VMU/vmu.h"
+#include "../VMU/vmu.h"
 
 // Global variables
 SystemState *system_state; // Pointer to the shared memory structure holding the system state
