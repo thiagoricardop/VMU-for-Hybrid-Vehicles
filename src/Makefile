@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -pthread -lrt -lm -I. -I./vmu -I./ev -I./iec
+CFLAGS = -pthread -lrt -lm -I. -I./VMU -I./EV -I./IEC
 BINDIR = bin
 EXECS = $(BINDIR)/vmu $(BINDIR)/ev $(BINDIR)/iec
 
@@ -9,13 +9,13 @@ $(BINDIR):
 	mkdir -p $(BINDIR)
 
 $(BINDIR)/vmu: | $(BINDIR)
-	$(CC) vmu/main.c vmu/vmu.h -o $(BINDIR)/vmu $(CFLAGS)
+	$(CC) VMU/main.c VMU/vmu.h -o $(BINDIR)/vmu $(CFLAGS)
 
 $(BINDIR)/ev: | $(BINDIR)
-	$(CC) ev/main.c ev/ev.h -o $(BINDIR)/ev $(CFLAGS)
+	$(CC) EV/main.c EV/ev.h -o $(BINDIR)/ev $(CFLAGS)
 
 $(BINDIR)/iec: | $(BINDIR)
-	$(CC) iec/main.c iec/iec.h -o $(BINDIR)/iec $(CFLAGS)
+	$(CC) IEC/main.c IEC/iec.h -o $(BINDIR)/iec $(CFLAGS)
 
 clean:
 	rm -f $(EXECS)
