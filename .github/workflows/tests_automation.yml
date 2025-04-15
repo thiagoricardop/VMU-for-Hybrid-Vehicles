@@ -21,4 +21,4 @@ jobs:
       run: cd test && make
       
     - name: Run test files
-      run: cd test/bin && ./test_vmu && ./test_ev && ./test_iec
+      run: cd test/bin && ./test_ev && ./test_iec && ./test_vmu
