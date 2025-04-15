@@ -1,4 +1,5 @@
 name: Unit tests
+
 on:
   push:
     branches:
@@ -10,12 +11,25 @@ on:
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
-      
-    - name: Config environment
-      run: sudo apt-get update && sudo apt-get install -y build-essential check lcov
 
-    - name: Make test files
-      run: make clean && make && make test && make coverage
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential check git perl
+
+    - name: Install latest lcov
+      run: |
+        git clone https://github.com/linux-test-project/lcov.git
+        cd lcov
+        sudo make install
+
+    - name: Build and test
+      run: |
+        make clean
+        make
+        make test
+        make coverage
