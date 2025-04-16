@@ -1,4 +1,4 @@
-CC = llvm
+CC = gcc
 CFLAGS = -pthread -lrt -lm -fprofile-arcs -ftest-coverage -fcondition-coverage
 CFLAGS += -I. -I./vmu -I./ev -I./iec
 LDLIBS = -lcheck -pthread -lm -lsubunit
@@ -14,7 +14,7 @@ TESTS = $(addprefix $(BINDIR)/test_, $(MODULES))
 
 TMUX_SESSION = meu_sistema
 
-.PHONY: all test coverage run clean kill
+.PHONY: all test coverage run show clean kill
 
 # Main target (compilation of executables)
 all: $(EXECS)
@@ -48,7 +48,7 @@ test: $(TESTS)
 coverage: test
 	lcov --capture --directory . --output-file coverage.info --branch-coverage --mcdc-coverage
 	genhtml coverage.info --output-directory $(COVERAGE_DIR) --branch-coverage --mcdc-coverage
-	xdg-open $(COVERAGE_DIR)/index.html || echo "Failed to open coverage report"
+	
 
 # Running in tmux with split windows
 run: all
@@ -58,6 +58,9 @@ run: all
 	@tmux select-layout -t $(TMUX_SESSION):0 tiled
 	@tmux select-pane -t $(TMUX_SESSION):0.0
 	@tmux attach -t $(TMUX_SESSION) || echo "Failed to attach to tmux session"
+
+show:
+	xdg-open $(COVERAGE_DIR)/index.html || echo "Failed to open coverage report"
 
 # Clean up (remove binaries and reports)
 clean:
