@@ -12,8 +12,8 @@
 #include <errno.h>
 
 // Include your project headers (adjust paths as needed)
-#include "../../src/IEC/iec.h"
-#include "../../src/VMU/vmu.h"
+#include "../../src/iec/iec.h"
+#include "../../src/vmu/vmu.h"
 
 // Global variables declared in the IEC module that we need to override for testing.
 extern SystemState *system_state;

@@ -10,8 +10,8 @@
 #include <mqueue.h>
 
 // Include your project headers (adjust paths as needed)
-#include "../../src/EV/ev.h"
-#include "../../src/VMU/vmu.h"
+#include "../../src/ev/ev.h"
+#include "../../src/vmu/vmu.h"
 
 // Global variables declared in ev.c that we need to override for testing.
 extern SystemState *system_state;
