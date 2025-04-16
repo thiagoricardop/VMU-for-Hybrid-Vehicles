@@ -1,4 +1,4 @@
-CC = gcc
+CC = llvm
 CFLAGS = -pthread -lrt -lm -fprofile-arcs -ftest-coverage -fcondition-coverage
 CFLAGS += -I. -I./vmu -I./ev -I./iec
 LDLIBS = -lcheck -pthread -lm -lsubunit
