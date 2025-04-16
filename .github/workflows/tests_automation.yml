@@ -27,6 +27,7 @@ jobs:
           linux-modules-extra-$(uname -r) \
           libcunit1 libcunit1-doc libcunit1-dev
         sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+        sudo update-alternatives --install /usr/bin/gcov gcov /usr/bin/gcov-14 100
         gcc --version
         gcov --version
 
