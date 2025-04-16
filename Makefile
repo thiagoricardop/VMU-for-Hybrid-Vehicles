@@ -1,34 +1,41 @@
-CC = gcc
+CC = llvm
 CFLAGS = -pthread -lrt -lm -fprofile-arcs -ftest-coverage -fcondition-coverage
-CFLAGS += -I. -I./VMU -I./EV -I./IEC
+CFLAGS += -I. -I./vmu -I./ev -I./iec
 LDLIBS = -lcheck -pthread -lm -lsubunit
 
 SRC_DIR = ./src
+TEST_DIR = ./test
 BINDIR = bin
 COVERAGE_DIR = coverage
 
-TEST_DIRS = EV VMU IEC
-EXECS = $(BINDIR)/vmu $(BINDIR)/ev $(BINDIR)/iec
-TESTS = $(BINDIR)/test_ev $(BINDIR)/test_vmu $(BINDIR)/test_iec
+MODULES = vmu ev iec
+EXECS = $(addprefix $(BINDIR)/, $(MODULES))
+TESTS = $(addprefix $(BINDIR)/test_, $(MODULES))
 
-.PHONY: all run coverage report clean
+TMUX_SESSION = meu_sistema
 
-# Alvo principal
+.PHONY: all test coverage run clean kill
+
+# Main target (compilation of executables)
 all: $(EXECS)
 
-# Criação do diretório bin
+# Create bin directory
 $(BINDIR):
-	mkdir -p $(BINDIR)
+	mkdir -p $@
 
-# Compilação dos executáveis principais (ordem corrigida)
-$(BINDIR)/vmu: | $(BINDIR)
-	$(CC) $(CFLAGS) src/VMU/main.c -o $(BINDIR)/vmu $(LDLIBS)
+# Pattern rule for main executables
+$(BINDIR)/%: $(SRC_DIR)/%/main.c | $(BINDIR)
+	$(CC) $(CFLAGS) $< -o $@ $(LDLIBS)
 
-$(BINDIR)/ev: | $(BINDIR)
-	$(CC) $(CFLAGS) src/EV/main.c -o $(BINDIR)/ev $(LDLIBS)
+# Testes individuais
+$(BINDIR)/test_ev: $(TEST_DIR)/ev/test_ev.c $(SRC_DIR)/ev/ev.c | $(BINDIR)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
 
-$(BINDIR)/iec: | $(BINDIR)
-	$(CC) $(CFLAGS) src/IEC/main.c -o $(BINDIR)/iec $(LDLIBS)
+$(BINDIR)/test_vmu: $(TEST_DIR)/vmu/test_vmu.c $(SRC_DIR)/vmu/vmu.c | $(BINDIR)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
+
+$(BINDIR)/test_iec: $(TEST_DIR)/iec/test_iec.c $(SRC_DIR)/iec/iec.c | $(BINDIR)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
 
 # Compilação e execução dos testes
 test: $(TESTS)
@@ -37,21 +44,25 @@ test: $(TESTS)
 		$$test_exec; \
 	done
 
-# Compilação dos testes com ordem corrigida
-$(BINDIR)/test_ev: test/EV/test_ev.c $(SRC_DIR)/EV/ev.c | $(BINDIR)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
-
-$(BINDIR)/test_vmu: test/VMU/test_vmu.c $(SRC_DIR)/VMU/vmu.c | $(BINDIR)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
-
-$(BINDIR)/test_iec: test/IEC/test_iec.c $(SRC_DIR)/IEC/iec.c | $(BINDIR)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
-
-# Geração de relatório de cobertura com LCOV + genhtml
-coverage: run
+# Coverage generation (report with LCOV + genhtml)
+coverage: test
 	lcov --capture --directory . --output-file coverage.info --branch-coverage --mcdc-coverage
 	genhtml coverage.info --output-directory $(COVERAGE_DIR) --branch-coverage --mcdc-coverage
-	xdg-open $(COVERAGE_DIR)/index.html
+	xdg-open $(COVERAGE_DIR)/index.html || echo "Failed to open coverage report"
 
+# Running in tmux with split windows
+run: all
+	@tmux new-session -d -s $(TMUX_SESSION) -n main './$(BINDIR)/vmu' || { echo "Failed to start tmux session"; exit 1; }
+	@tmux split-window -v -t $(TMUX_SESSION):0 './$(BINDIR)/ev' || { echo "Failed to split window for ev"; exit 1; }
+	@tmux split-window -h -t $(TMUX_SESSION):0.1 './$(BINDIR)/iec' || { echo "Failed to split window for iec"; exit 1; }
+	@tmux select-layout -t $(TMUX_SESSION):0 tiled
+	@tmux select-pane -t $(TMUX_SESSION):0.0
+	@tmux attach -t $(TMUX_SESSION) || echo "Failed to attach to tmux session"
+
+# Clean up (remove binaries and reports)
 clean:
 	rm -rf $(BINDIR) $(COVERAGE_DIR) coverage.info
+
+# Stop tmux
+kill:
+	@tmux kill-session -t $(TMUX_SESSION) || echo "No tmux session to kill"

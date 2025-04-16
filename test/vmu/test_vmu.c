@@ -4,7 +4,7 @@
 #include <math.h>
 #include <errno.h>
 #include <stdio.h>
-#include "../../src/VMU/vmu.h"
+#include "../../src/vmu/vmu.h"
 
 // Mocking shared memory and semaphore functions
 SystemState *mock_system_state;
