@@ -4,8 +4,8 @@
 #include <semaphore.h>
 #include <stdio.h>
 #include <unistd.h>
-#include "../../src/IEC/iec.h"  // Adjust the path as needed
-#include "../../src/VMU/vmu.h"
+#include "../../src/iec/iec.h"  // Adjust the path as needed
+#include "../../src/vmu/vmu.h"
 
 // Global pointers used by the engine() function.
 static SystemState *test_state = NULL;
