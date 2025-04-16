@@ -51,7 +51,7 @@ $(BINDIR)/test_iec: test/IEC/test_iec.c $(SRC_DIR)/IEC/iec.c | $(BINDIR)
 coverage: run
 	lcov --capture --directory . --output-file coverage.info --branch-coverage --mcdc-coverage
 	genhtml coverage.info --output-directory $(COVERAGE_DIR) --branch-coverage --mcdc-coverage
-	xdg-open $(COVERAGE_DIR)/index.html
+	# xdg-open $(COVERAGE_DIR)/index.html
 
 clean:
 	rm -rf $(BINDIR) $(COVERAGE_DIR) coverage.info
