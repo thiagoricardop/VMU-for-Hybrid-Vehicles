@@ -208,8 +208,8 @@ void vmu_control_engines() {
             // if vehicle is parked, starts with combustion only power mode 
             if (current_speed == PARKED) {
         
-                system_state->evPercentage  = INACTIVE; // 0% of use
-                system_state->iecPercentage = ACT_ALONE; // 100% of use
+                system_state->evPercentage  = INACTIVE; // 0% of use / INACTIVE = 0.0
+                system_state->iecPercentage = ACT_ALONE; // 100% of use / ACT_ALONE = 1.0
                 system_state->power_mode    = COMBUSTION_ONLY;     // Combustion only
                 system_state->ev_on         = false;
             } 
