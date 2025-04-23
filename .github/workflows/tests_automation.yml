@@ -1,0 +1,24 @@
+name: Unit tests
+
+on:
+  push:
+    branches:
+      - develop
+      - documentation/tests
+  pull_request:
+    branches: ["develop"]
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: update docker env
+      run: docker build -t vmu-dev .
+
+    - name: Build and test
+      run: |
+        docker run --rm -v $(pwd):/app vmu-dev bash -c "make clean && make && make test && make coverage"
