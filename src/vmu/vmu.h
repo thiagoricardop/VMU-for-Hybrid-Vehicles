@@ -7,6 +7,9 @@
 #include <signal.h>
 #include <semaphore.h>
 #include <mqueue.h>
+#include <stdint.h>  
+#include "./VARIABLES/vmu_variables.h"
+#include "./INTERFACE/interface.h"
 
 // Define names for shared memory, semaphore, and message queues
 #define SHARED_MEM_NAME "/hybrid_car_shared_data"
@@ -26,59 +29,7 @@
 #define TRANSITION_ZONE_WIDTH 20.0
 
 
-// Structure for system state
-typedef struct {
-    bool accelerator;
-    bool brake;
-    double speed;
-    int rpm_ev;
-    int rpm_iec;
-    bool ev_on;
-    bool iec_on;
-    double temp_ev;
-    double temp_iec;
-    double battery; 
-    double fuel;    
-    int power_mode; // 0: Hybrid, 1: Electric Only, 2: Combustion Only, 3: Regenerative Braking, 4: Parked
-    double transition_factor;
-} SystemState;
-
-// Structure for messages (if needed for communication beyond commands)
-typedef struct {
-    char command;
-    int value; // Example value
-} Message;
-
-// Enumeration for engine commands
-typedef enum {
-    CMD_START,
-    CMD_STOP,
-    CMD_SET_POWER,
-    CMD_END
-} CommandType;
-
-// Structure for engine commands
-typedef struct {
-    CommandType type;
-    double power_level;
-} EngineCommand;
-
-// Function prototypes
-void set_acceleration(bool accelerate);
-void set_braking(bool brake);
-double calculate_speed(SystemState *state);
-void vmu_control_engines();
-void init_system_state(SystemState *state);
-void display_status(const SystemState *state);
-void init_communication();
-void cleanup();
-void *read_input(void *arg);
+// Signal handler function (prototype)
 void handle_signal(int sig);
-
-// Declare global variables as extern
-extern SystemState *system_state;
-extern sem_t *sem;
-extern mqd_t ev_mq;
-extern mqd_t iec_mq;
 
 #endif
