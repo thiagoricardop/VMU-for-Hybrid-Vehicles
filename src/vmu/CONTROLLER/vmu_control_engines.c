@@ -60,6 +60,7 @@ void vmu_control_engines() {
             system_state->ev_on = false;
         }
 
+        // This condition ends when the vehicles EV's battery charge reaches 100%, that is at line 40
     }
 
 
@@ -145,7 +146,7 @@ void vmu_control_engines() {
         
             } 
             
-            // Calculate the correct ratio of engines use based on vehicle speed 
+            // Apply smoothly transition to EV if vehicle's speed is above than 45km/h 
             else {
                 
                 system_state->evPercentage  += 0.02; // TWO_PERCENT = 0.02
@@ -153,11 +154,11 @@ void vmu_control_engines() {
 
             }
 
-            // Ends transition when EV percentage reaches CHARGE_FULL            
-            if (system_state->evPercentage >= ACT_ALONE) {
+            // Ends transition when EV percentage reaches 100% percent of use            
+            if (system_state->evPercentage >= ACT_ALONE) { // ACT_ALONE = 1.0
                 transitionEV = false;
                 system_state->evPercentage  = ACT_ALONE;
-                system_state->iecPercentage = INACTIVE;
+                system_state->iecPercentage = INACTIVE; // INACTIVE = 0.0
             }
 
             system_state->power_mode = ELETRIC_ONLY; // Eletric only
@@ -208,9 +209,9 @@ void vmu_control_engines() {
             // if vehicle is parked, starts with combustion only power mode 
             if (current_speed == PARKED) {
         
-                system_state->evPercentage  = INACTIVE; // 0% of use
-                system_state->iecPercentage = ACT_ALONE; // 100% of use
-                system_state->power_mode    = COMBUSTION_ONLY;     // Combustion only
+                system_state->evPercentage  = INACTIVE; // 0% of use / INACTIVE = 0.0
+                system_state->iecPercentage = ACT_ALONE; // 100% of use / ACT_ALONE = 1.0
+                system_state->power_mode    = COMBUSTION_ONLY; // Combustion only = 2
                 system_state->ev_on         = false;
             } 
             
