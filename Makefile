@@ -14,7 +14,7 @@ TESTS = $(addprefix $(BINDIR)/test_, $(MODULES))
 
 TMUX_SESSION = meu_sistema
 
-.PHONY: all test coverage run show clean kill
+.PHONY: all docker test coverage run show clean kill
 
 # Main target (compilation of executables)
 all: $(EXECS)
@@ -37,6 +37,10 @@ $(BINDIR)/test_vmu: $(TEST_DIR)/vmu/test_vmu.c $(SRC_DIR)/vmu/vmu.c | $(BINDIR)
 $(BINDIR)/test_iec: $(TEST_DIR)/iec/test_iec.c $(SRC_DIR)/iec/iec.c | $(BINDIR)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
 
+# Docker build
+docker:
+	docker build -t vmu-dev .
+	
 # Compilação e execução dos testes
 test: $(TESTS)
 	@for test_exec in $(TESTS); do \
