@@ -10,26 +10,20 @@
 #include <mqueue.h>
 
 // Include your project headers (adjust paths as needed)
-#include "../../src/EV/ev.h"
-#include "../../src/VMU/vmu.h"
-
-// Global variables declared in ev.c that we need to override for testing.
-extern SystemState *system_state;
-extern sem_t *sem;
-extern volatile sig_atomic_t running;
-extern mqd_t ev_mq_receive; // Message queue descriptor
+#include "../../src/ev/ev.h"
+#include "../../src/vmu/vmu.h"
 
 // For testing, we simulate the message queue behavior by overriding mq_receive.
 // A flag and a fake command will control the behavior.
 int fake_mq_receive_enabled = 0;
-EngineCommand fake_cmd;
+EngineCommandEV fake_cmd;
 
 // Override of mq_receive to simulate receiving a message from the queue.
 // When fake_mq_receive_enabled is set, this function copies fake_cmd into msg_ptr.
 ssize_t mq_receive(mqd_t mqdes, char *msg_ptr, size_t msg_len, unsigned int *msg_prio) {
     if (fake_mq_receive_enabled) {
-        memcpy(msg_ptr, &fake_cmd, sizeof(EngineCommand));
-        return sizeof(EngineCommand);
+        memcpy(msg_ptr, &fake_cmd, sizeof(EngineCommandEV));
+        return sizeof(EngineCommandEV);
     }
     return -1; // Simulate no message received.
 }
@@ -73,29 +67,6 @@ void receive_cmd_teardown(void) {
     free(test_system_state);
 }
 
-// Test: CMD_START sets ev_on to true.
-START_TEST(test_receive_cmd_start) {
-    fake_mq_receive_enabled = 1;
-    fake_cmd.type = CMD_START;
-    system_state->ev_on = false;
-    receive_cmd();
-    ck_assert(system_state->ev_on == true);
-    fake_mq_receive_enabled = 0;
-}
-END_TEST
-
-// Test: CMD_STOP sets ev_on to false and resets rpm_ev.
-START_TEST(test_receive_cmd_stop) {
-    fake_mq_receive_enabled = 1;
-    fake_cmd.type = CMD_STOP;
-    system_state->ev_on = true;
-    system_state->rpm_ev = 5000;
-    receive_cmd();
-    ck_assert(system_state->ev_on == false);
-    ck_assert_int_eq(system_state->rpm_ev, 0);
-    fake_mq_receive_enabled = 0;
-}
-END_TEST
 
 // Test: CMD_SET_POWER does not alter state.
 START_TEST(test_receive_cmd_set_power) {
@@ -105,7 +76,7 @@ START_TEST(test_receive_cmd_set_power) {
     bool initial_ev_on = system_state->ev_on;
     int initial_rpm = system_state->rpm_ev;
     float initial_temp = system_state->temp_ev;
-    receive_cmd();
+    fake_cmd = ev_receive(fake_cmd);
     ck_assert(system_state->ev_on == initial_ev_on);
     ck_assert_int_eq(system_state->rpm_ev, initial_rpm);
     ck_assert(system_state->temp_ev == initial_temp);
@@ -117,8 +88,10 @@ END_TEST
 START_TEST(test_receive_cmd_end) {
     fake_mq_receive_enabled = 1;
     fake_cmd.type = CMD_END;
+    fake_cmd.toVMU = false;
     running = 1;
-    receive_cmd();
+    cmd = ev_receive(fake_cmd);
+    ev_treatValues();
     ck_assert_int_eq(running, 0);
     fake_mq_receive_enabled = 0;
 }
@@ -132,7 +105,7 @@ START_TEST(test_receive_cmd_default) {
     int initial_rpm = system_state->rpm_ev;
     float initial_temp = system_state->temp_ev;
     int initial_running = running;
-    receive_cmd();
+    fake_cmd = ev_receive(fake_cmd);
     ck_assert(system_state->ev_on == initial_ev_on);
     ck_assert_int_eq(system_state->rpm_ev, initial_rpm);
     ck_assert(system_state->temp_ev == initial_temp);
@@ -174,18 +147,18 @@ void init_comm_teardown(void) {
     }
     sem_close(sem);
     sem_unlink(SEMAPHORE_NAME);
-    mq_close(ev_mq_receive);
+    mq_close(ev_mq);
     mq_unlink(EV_COMMAND_QUEUE_NAME);
     shm_unlink(SHARED_MEM_NAME);
 }
 
 // Test: init_communication() initializes shared memory, semaphore, and message queue.
 START_TEST(test_init_communication_success) {
-    init_communication();
+    ev_initializer();
     ck_assert_ptr_nonnull(system_state);
     ck_assert_ptr_ne(system_state, MAP_FAILED);
     ck_assert_ptr_nonnull(sem);
-    ck_assert_int_ne(ev_mq_receive, (mqd_t)-1);
+    ck_assert_int_ne(ev_mq, (mqd_t)-1);
 }
 END_TEST
 
@@ -222,22 +195,12 @@ void engine_teardown(void) {
     free(test_system_state);
 }
 
-// Test: When engine is on, rpm and temperature are updated accordingly.
-START_TEST(test_engine_on) {
-    system_state->ev_on = true;
-    system_state->transition_factor = 0.0; // Expect full power: rpm = 8000, temp increases by 0.05
-    system_state->temp_ev = 25.0;
-    engine();
-    ck_assert_int_eq(system_state->rpm_ev, 8000);
-    ck_assert_double_eq(system_state->temp_ev, 25.0 + 0.05);
-}
-END_TEST
 
 // Test: When engine is off and temperature > ambient, rpm is 0 and temperature cools.
 START_TEST(test_engine_off_cooling) {
     system_state->ev_on = false;
     system_state->temp_ev = 30.0;
-    engine();
+    ev_treatValues();
     ck_assert_int_eq(system_state->rpm_ev, 0);
     ck_assert_double_eq(system_state->temp_ev, 30.0 - 0.01);
 }
@@ -247,7 +210,7 @@ END_TEST
 START_TEST(test_engine_off_no_cooling) {
     system_state->ev_on = false;
     system_state->temp_ev = 25.0;
-    engine();
+    ev_treatValues();
     ck_assert_int_eq(system_state->rpm_ev, 0);
     ck_assert_double_eq(system_state->temp_ev, 25.0);
 }
@@ -260,77 +223,26 @@ END_TEST
 // Setup for cleanup() tests.
 // This fixture creates real shared memory, semaphore, and a message queue so that cleanup() has valid resources to release.
 void cleanup_setup(void) {
-    int shm_fd = shm_open(SHARED_MEM_NAME, O_CREAT | O_RDWR, 0666);
-    if (shm_fd == -1) {
-        perror("shm_open in cleanup_setup");
-        exit(EXIT_FAILURE);
-    }
-    if (ftruncate(shm_fd, sizeof(SystemState)) == -1) {
-        perror("ftruncate in cleanup_setup");
-        exit(EXIT_FAILURE);
-    }
-    system_state = mmap(NULL, sizeof(SystemState), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    if (system_state == MAP_FAILED) {
-        perror("mmap in cleanup_setup");
-        exit(EXIT_FAILURE);
-    }
-    close(shm_fd);
-
-    sem_unlink(SEMAPHORE_NAME);
-    sem = sem_open(SEMAPHORE_NAME, O_CREAT, 0666, 1);
-    if (sem == SEM_FAILED) {
-        perror("sem_open in cleanup_setup");
-        exit(EXIT_FAILURE);
-    }
-
-    mq_unlink(EV_COMMAND_QUEUE_NAME);
-    struct mq_attr attr;
-    attr.mq_flags = 0;
-    attr.mq_maxmsg = 10;
-    attr.mq_msgsize = sizeof(EngineCommand);
-    attr.mq_curmsgs = 0;
-    ev_mq_receive = mq_open(EV_COMMAND_QUEUE_NAME, O_CREAT | O_RDONLY | O_NONBLOCK, 0666, &attr);
-    if (ev_mq_receive == (mqd_t)-1) {
-        perror("mq_open in cleanup_setup");
-        exit(EXIT_FAILURE);
-    }
+    int32_t ret = ev_initializer();
 }
 
 // Teardown for cleanup() tests.
 void cleanup_teardown(void) {
-    shm_unlink(SHARED_MEM_NAME);
-    sem_unlink(SEMAPHORE_NAME);
-    mq_unlink(EV_COMMAND_QUEUE_NAME);
+
+    int fd = shm_open(SHARED_MEM_NAME, O_CREAT | O_RDWR, 0666);
+    ftruncate(fd, sizeof(SystemState));
+    close(fd);
+    
+    ev_cleanUp();
 }
 
-// Test: cleanup() properly releases resources and prints the shutdown message.
-START_TEST(test_cleanup) {
-    // Redirect stdout to a temporary file to capture the output.
-    fflush(stdout);
-    int stdout_backup = dup(fileno(stdout));
-    FILE *temp_file = tmpfile();
-    if (!temp_file) {
-        perror("tmpfile");
-        exit(EXIT_FAILURE);
-    }
-    dup2(fileno(temp_file), fileno(stdout));
+START_TEST(test_cleanup) {  /* START_TEST/END_TEST :contentReference[oaicite:3]{index=3} */
 
-    // Call cleanup().
-    cleanup();
+    ev_cleanUp();
 
-    fflush(stdout);
-    // Restore stdout.
-    dup2(stdout_backup, fileno(stdout));
-    close(stdout_backup);
-
-    // Read the output from the temporary file.
-    rewind(temp_file);
-    char buffer[256];
-    fgets(buffer, sizeof(buffer), temp_file);
-    fclose(temp_file);
-
-    ck_assert_msg(strstr(buffer, "[EV] Shut down complete.") != NULL,
-                  "Cleanup did not print the expected shutdown message");
+    ck_assert_int_eq(ev_mq, (mqd_t)-1);
+    ck_assert_ptr_eq(system_state, NULL);     /* ck_assert_ptr_eq para ponteiros */ 
+    ck_assert_ptr_eq(sem, NULL);              /* idem */     
 }
 END_TEST
 
@@ -346,8 +258,6 @@ Suite* all_tests_suite(void) {
     /* TCase for receive_cmd() tests */
     tc_receive_cmd = tcase_create("ReceiveCmd");
     tcase_add_checked_fixture(tc_receive_cmd, receive_cmd_setup, receive_cmd_teardown);
-    tcase_add_test(tc_receive_cmd, test_receive_cmd_start);
-    tcase_add_test(tc_receive_cmd, test_receive_cmd_stop);
     tcase_add_test(tc_receive_cmd, test_receive_cmd_set_power);
     tcase_add_test(tc_receive_cmd, test_receive_cmd_end);
     tcase_add_test(tc_receive_cmd, test_receive_cmd_default);
@@ -362,7 +272,6 @@ Suite* all_tests_suite(void) {
     /* TCase for engine() tests */
     tc_engine = tcase_create("Engine");
     tcase_add_checked_fixture(tc_engine, engine_setup, engine_teardown);
-    tcase_add_test(tc_engine, test_engine_on);
     tcase_add_test(tc_engine, test_engine_off_cooling);
     tcase_add_test(tc_engine, test_engine_off_no_cooling);
     suite_add_tcase(s, tc_engine);

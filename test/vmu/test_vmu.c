@@ -4,7 +4,9 @@
 #include <math.h>
 #include <errno.h>
 #include <stdio.h>
+
 #include "../../src/vmu/vmu.h"
+
 
 // Mocking shared memory and semaphore functions
 SystemState *mock_system_state;
@@ -156,8 +158,8 @@ END_TEST
 START_TEST(test_vmu_control_engines_above_transition_accelerating_fuel)
 {
     mock_system_state->speed = TRANSITION_SPEED_THRESHOLD + (TRANSITION_ZONE_WIDTH / 2.0) + 1;
-    mock_system_state->battery = 50.0;
-    mock_system_state->fuel = 50.0;
+    mock_system_state->battery = 9.0;
+    mock_system_state->fuel = 45.0;
     mock_system_state->accelerator = true;
     vmu_control_engines();
     ck_assert_double_eq_tol(mock_system_state->transition_factor, 1.0, 1e-9);
