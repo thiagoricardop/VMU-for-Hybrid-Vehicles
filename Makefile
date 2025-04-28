@@ -83,7 +83,14 @@ $(BINTEST)/test_vmu: $(TEST_DIR)/vmu/test_vmu.o $(VMU_TEST_OBJS) | $(BINTEST)
 $(BINTEST)/test_iec: $(TEST_DIR)/iec/test_iec.o $(IEC_TEST_OBJS) | $(BINTEST)
 	$(CC) $^ -o $@ $(CFLAGS_TEST) $(LDLIBS)
 
+
 # — Run tests —
+
+# Docker build
+docker:
+	docker build -t vmu-dev .
+	
+# Compilação e execução dos testes
 test: $(TESTS)
 	@for t in $^; do echo "Executando $$t..."; $$t; done
 
