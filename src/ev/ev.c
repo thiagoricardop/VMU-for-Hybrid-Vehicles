@@ -23,13 +23,15 @@ volatile sig_atomic_t paused = 0;  // Flag to indicate if the simulation is paus
 EngineCommand cmd; // Structure to hold the received command
 
 // Function to handle signals (SIGUSR1 for pause, SIGINT/SIGTERM for shutdown)
-void handle_signal(int sig) {
+int handle_signal(int sig) {
     if (sig == SIGUSR1) {
         paused = !paused;
         printf("[EV] Paused: %s\n", paused ? "true" : "false");
+        return 0;
     } else if (sig == SIGINT || sig == SIGTERM) {
         running = 0;
         printf("[EV] Shutting down...\n");
+        return 1;
     }
 }
 

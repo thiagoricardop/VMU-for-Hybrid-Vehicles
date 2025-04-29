@@ -4,6 +4,7 @@
 #include <math.h>
 #include <errno.h>
 #include <stdio.h>
+#include <signal.h>
 #include "../../src/vmu/vmu.h"
 
 // Mocking shared memory and semaphore functions
@@ -74,6 +75,18 @@ START_TEST(test_init_system_state)
     ck_assert_double_eq_tol(state.fuel, MAX_FUEL, 1e-9);
     ck_assert_int_eq(state.power_mode, 5); // Check for initial parked mode
     ck_assert_double_eq_tol(state.transition_factor, 0.0, 1e-9);
+}
+END_TEST
+
+//test hangle signals 
+START_TEST(test_handle_signal_pause){
+    ck_assert(handle_signal(SIGUSR1) == 0);
+}
+END_TEST
+
+START_TEST(test_handle_signal_kill){
+    ck_assert(handle_signal(SIGINT) == 1);
+    ck_assert(handle_signal(SIGTERM) == 1);
 }
 END_TEST
 

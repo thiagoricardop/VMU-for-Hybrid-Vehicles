@@ -202,6 +202,18 @@ START_TEST(test_init_communication_success) {
 }
 END_TEST
 
+//test hangle signals 
+START_TEST(test_handle_signal_pause){
+    ck_assert(handle_signal(SIGUSR1) == 0);
+}
+END_TEST
+
+START_TEST(test_handle_signal_kill){
+    ck_assert(handle_signal(SIGINT) == 1);
+    ck_assert(handle_signal(SIGTERM) == 1);
+}
+END_TEST
+
 // Test receive_cmd() with CMD_START: system_state->iec_on should be set to true.
 START_TEST(test_receive_cmd_start) {
     fake_mq_receive_enabled = 1;

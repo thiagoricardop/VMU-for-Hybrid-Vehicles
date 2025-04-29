@@ -73,7 +73,7 @@ void display_status(const SystemState *state);
 void init_communication();
 void cleanup();
 void *read_input(void *arg);
-void handle_signal(int sig);
+int handle_signal(int sig);
 
 // Declare global variables as extern
 extern SystemState *system_state;

@@ -8,6 +8,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <mqueue.h>
+#include <signal.h>
 
 // Include your project headers (adjust paths as needed)
 #include "../../src/ev/ev.h"
@@ -72,6 +73,18 @@ void receive_cmd_teardown(void) {
     free(test_sem);
     free(test_system_state);
 }
+
+//Test handle signals
+START_TEST(test_handle_signal_pause){
+    ck_assert(handle_signal(SIGUSR1) == 0);
+}
+END_TEST
+
+START_TEST(test_handle_signal_kill){
+    ck_assert(handle_signal(SIGINT) == 1);
+    ck_assert(handle_signal(SIGTERM) == 1);
+}
+END_TEST
 
 // Test: CMD_START sets ev_on to true.
 START_TEST(test_receive_cmd_start) {
