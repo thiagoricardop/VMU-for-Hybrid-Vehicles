@@ -2,7 +2,8 @@
 #ifndef EV_H
 #define EV_H
 
-int handle_signal(int sig);
+void handle_signal(int sig);
+int get_signal();
 void init_communication();
 void receive_cmd();
 void engine();

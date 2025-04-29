@@ -74,15 +74,18 @@ void receive_cmd_teardown(void) {
     free(test_system_state);
 }
 
-//Test handle signals
+//test hangle signals 
 START_TEST(test_handle_signal_pause){
-    ck_assert(handle_signal(SIGUSR1) == 0);
+    handle_signal(SIGUSR1);
+    ck_assert_int_eq(get_signal(), 0);
 }
 END_TEST
 
 START_TEST(test_handle_signal_kill){
-    ck_assert(handle_signal(SIGINT) == 1);
-    ck_assert(handle_signal(SIGTERM) == 1);
+    handle_signal(SIGINT);
+    ck_assert_int_eq(get_signal(), 1);
+    handle_signal(SIGTERM);
+    ck_assert_int_eq(get_signal(), 1);
 }
 END_TEST
 

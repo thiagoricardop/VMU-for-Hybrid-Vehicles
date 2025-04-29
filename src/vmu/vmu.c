@@ -36,18 +36,23 @@ mqd_t ev_mq, iec_mq;      // Message queue descriptors for communication with EV
 pthread_t input_thread;
 volatile sig_atomic_t running = 1; // Flag to control the main loop, volatile to ensure visibility across threads
 volatile sig_atomic_t paused = 0;  // Flag to indicate if the simulation is paused
+int signal_type = -1;
 
 // Function to handle signals (SIGUSR1 for pause, SIGINT/SIGTERM for shutdown)
-int handle_signal(int sig) {
+void handle_signal(int sig) {
     if (sig == SIGUSR1) {
         paused = !paused;
         printf("[VMU] Paused: %s\n", paused ? "true" : "false");
-        return 0;
+        signal_type = 0;
     } else if (sig == SIGINT || sig == SIGTERM) {
         running = 0;
         printf("[VMU] Shutting down...\n");
-        return 1;
+        signal_type = 1;
     }
+}
+
+int get_signal(){
+    return signal_type;
 }
 
 // Function to display the current state of the system
