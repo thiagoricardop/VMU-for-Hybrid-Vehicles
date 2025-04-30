@@ -1,125 +1,144 @@
-# — Compiler and flags —
-CC           := gcc
-CFLAGS       := -pthread -lrt -lm --coverage \
-                 -I. -Isrc/vmu -Isrc/ev -Isrc/iec
-CFLAGS_TEST  := $(CFLAGS) -DTESTING
-LDLIBS       := -lcheck -pthread -lm -lsubunit
-
-# — Directories —
+# — Diretórios —
 SRC_DIR      := src
 TEST_DIR     := test
-BINSRC       := $(SRC_DIR)/bin
-BINTEST      := $(TEST_DIR)/bin
+BINSRC       := bin
+BINTEST := $(BINSRC)/test
 COVERAGE_DIR := coverage
+
+# — Compilador e flags —
+CC           := gcc
+
+# Flags de cobertura: gera .gcno ao lado de .o, emite .gcda em BINSRC
+CFLAGS := -pthread -lrt -lm --coverage \
+          -I. -Isrc/vmu -Isrc/ev -Isrc/iec \
+          -fprofile-arcs \
+          -ftest-coverage \
+          -fprofile-dir=$(BINSRC)
+
+CFLAGS_TEST  := $(CFLAGS) -DTESTING 
+LDLIBS       := -lcheck -pthread -lm -lsubunit
 
 MODULES      := vmu ev iec
 EXECS        := $(addprefix $(BINSRC)/, $(MODULES))
-TESTS        := $(BINTEST)/test_ev $(BINTEST)/test_vmu $(BINTEST)/test_iec
 
 TMUX_SESSION := sistema
 
-# — Source files by module —
-VMU_ALL_SRCS    := $(wildcard src/vmu/*.c)
-VMU_SRCS        := $(filter-out src/vmu/main.c, $(VMU_ALL_SRCS))
-VMU_OBJS        := $(VMU_SRCS:.c=.o)
-VMU_MAIN_OBJ    := src/vmu/main.o
-VMU_APP_OBJS    := $(VMU_OBJS) $(VMU_MAIN_OBJ)
+# — Arquivos fonte e objetos para cada módulo —
+VMU_SRCS := $(filter-out src/vmu/main.c,$(wildcard src/vmu/*.c))
+VMU_OBJS := $(patsubst src/vmu/%.c,$(BINSRC)/%.o,$(VMU_SRCS))
+VMU_MAIN := $(BINSRC)/main_vmu.o
+VMU_APP  := $(VMU_OBJS) $(VMU_MAIN)
 
-EV_ALL_SRCS     := $(shell find src/ev -name '*.c')
-EV_SRCS         := $(filter-out %/main.c, $(EV_ALL_SRCS))
-EV_OBJS         := $(EV_SRCS:.c=.o)
-EV_MAIN_OBJ     := $(filter %/main.o, $(EV_ALL_SRCS:.c=.o))
-EV_APP_OBJS     := $(EV_OBJS) $(EV_MAIN_OBJ)
+EV_SRCS := $(filter-out src/ev/main.c,$(wildcard src/ev/*.c))
+EV_OBJS := $(patsubst src/ev/%.c,$(BINSRC)/%.o,$(EV_SRCS))
+EV_MAIN := $(BINSRC)/main_ev.o
+EV_APP  := $(EV_OBJS) $(EV_MAIN)
 
-IEC_ALL_SRCS    := $(wildcard src/iec/*.c)
-IEC_SRCS        := $(filter-out src/iec/main.c, $(IEC_ALL_SRCS))
-IEC_OBJS        := $(IEC_SRCS:.c=.o)
-IEC_MAIN_OBJ    := src/iec/main.o
-IEC_APP_OBJS    := $(IEC_OBJS) $(IEC_MAIN_OBJ)
+IEC_SRCS := $(filter-out src/iec/main.c,$(wildcard src/iec/*.c))
+IEC_OBJS := $(patsubst src/iec/%.c,$(BINSRC)/%.o,$(IEC_SRCS))
+IEC_MAIN := $(BINSRC)/main_iec.o
+IEC_APP  := $(IEC_OBJS) $(IEC_MAIN)
 
-# — Test object lists —
-VMU_TEST_OBJS := $(VMU_OBJS)
-EV_TEST_OBJS  := $(EV_OBJS)
-IEC_TEST_OBJS := $(IEC_OBJS)
+TEST_SRCS := $(wildcard $(TEST_DIR)/vmu/test_vmu.c \
+                       $(TEST_DIR)/ev/test_ev.c \
+                       $(TEST_DIR)/iec/test_iec.c)
 
-# — Phony targets —
+# Objetos de teste: bin/test_vmu.o, bin/test_ev.o, bin/test_iec.o
+TEST_OBJS := $(patsubst $(TEST_DIR)/%/test_%.c,$(BINSRC)/test_%.o,$(TEST_SRCS))
+
+TESTS := $(BINTEST)/test_vmu $(BINTEST)/test_ev $(BINTEST)/test_iec
+
+# — Alvos fictícios e secundários —
 .PHONY: all test coverage run show clean kill
-.SECONDARY: $(VMU_OBJS) $(EV_OBJS) $(IEC_OBJS) src/vmu/main.o src/ev/main.o src/iec/main.o
+.SECONDARY: $(BINSRC)/%.o
 
-# — Default: build applications —
+# — Alvo padrão: compila aplicações —
 all: $(EXECS)
 
-# Create bin directories
+# — Cria diretório bin se necessário —
 $(BINSRC):
 	mkdir -p $@
-$(BINTEST):
+
+$(BINTEST): | $(BINSRC)
 	mkdir -p $@
 
-# — Link applications —
-$(BINSRC)/vmu: $(VMU_APP_OBJS) | $(BINSRC)
-	$(CC) $^ -o $@ $(CFLAGS) $(LDLIBS)
-
-$(BINSRC)/ev: $(EV_APP_OBJS) | $(BINSRC)
-	$(CC) $^ -o $@ $(CFLAGS) $(LDLIBS)
-
-$(BINSRC)/iec: $(IEC_APP_OBJS) | $(BINSRC)
-	$(CC) $^ -o $@ $(CFLAGS) $(LDLIBS)
-
-# — Generic compile rule —
-%.o: %.c
+# — Regras de compilação para cada módulo —
+$(BINSRC)/%.o: src/vmu/%.c | $(BINSRC)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# — Test object compilation —
-$(TEST_DIR)/%/test_%.o: $(TEST_DIR)/%/test_%.c | $(BINTEST)
+$(BINSRC)/%.o: src/ev/%.c | $(BINSRC)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BINSRC)/%.o: src/iec/%.c | $(BINSRC)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# — Compila main de cada módulo —
+$(BINSRC)/main_%.o: src/%/main.c | $(BINSRC)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# — Linka executáveis —
+$(BINSRC)/vmu: $(VMU_APP)
+	$(CC) $^ -o $@ $(CFLAGS) $(LDLIBS)
+
+$(BINSRC)/ev: $(EV_APP)
+	$(CC) $^ -o $@ $(CFLAGS) $(LDLIBS)
+
+$(BINSRC)/iec: $(IEC_APP)
+	$(CC) $^ -o $@ $(CFLAGS) $(LDLIBS)
+
+# 1) Regra explícita para cada objeto de teste
+$(BINSRC)/test_vmu.o: $(TEST_DIR)/vmu/test_vmu.c | $(BINSRC)
 	$(CC) $(CFLAGS_TEST) -c $< -o $@
 
-# — Test executables linking —
-$(BINTEST)/test_ev:  $(TEST_DIR)/ev/test_ev.o  $(EV_TEST_OBJS)  | $(BINTEST)
+$(BINSRC)/test_ev.o: $(TEST_DIR)/ev/test_ev.c | $(BINSRC)
+	$(CC) $(CFLAGS_TEST) -c $< -o $@
+
+$(BINSRC)/test_iec.o: $(TEST_DIR)/iec/test_iec.c | $(BINSRC)
+	$(CC) $(CFLAGS_TEST) -c $< -o $@
+
+# 2) Link: gera bin/test/test_vmu, bin/test/test_ev, bin/test/test_iec
+#    Usa cada objeto de teste + objetos já compilados da aplicação
+$(BINTEST)/test_vmu: $(BINSRC)/test_vmu.o $(VMU_OBJS) | $(BINTEST)
 	$(CC) $^ -o $@ $(CFLAGS_TEST) $(LDLIBS)
 
-$(BINTEST)/test_vmu: $(TEST_DIR)/vmu/test_vmu.o $(VMU_TEST_OBJS) | $(BINTEST)
+$(BINTEST)/test_ev:  $(BINSRC)/test_ev.o  $(EV_OBJS) | $(BINTEST)
 	$(CC) $^ -o $@ $(CFLAGS_TEST) $(LDLIBS)
 
-$(BINTEST)/test_iec: $(TEST_DIR)/iec/test_iec.o $(IEC_TEST_OBJS) | $(BINTEST)
+$(BINTEST)/test_iec: $(BINSRC)/test_iec.o $(IEC_OBJS) | $(BINTEST)
 	$(CC) $^ -o $@ $(CFLAGS_TEST) $(LDLIBS)
 
-
-# — Run tests —
-
-# Docker build
-docker:
-	docker build -t vmu-dev .
-	
-# Compilação e execução dos testes
+# — Executa testes —
 test: $(TESTS)
-	@for t in $^; do echo "Executando $$t..."; $$t; done
+	@echo ">>> Entrou no target test <<<"
+	@for t in $^; do \
+		echo "Executando $$t…"; \
+		./$$t; \
+	done
 
-# — Coverage report —
+# — Relatório de cobertura —
 coverage: test
-	lcov --capture --directory . --output-file coverage.info --branch-coverage --mcdc-coverage
-	genhtml coverage.info --output-directory $(COVERAGE_DIR) --branch-coverage --mcdc-coverage
+	lcov --capture --directory $(BINSRC) --output-file coverage.info --branch-coverage
+	genhtml coverage.info --output-directory $(COVERAGE_DIR) --branch-coverage
 
-# — Run in tmux —
+# — Executa em tmux —
 run: all
-	@tmux new-session -d -s $(TMUX_SESSION) -n vmu './$(BINSRC)/vmu' || { echo "Failed to start tmux session"; exit 1; }
-	@tmux split-window -v -t $(TMUX_SESSION):0 './$(BINSRC)/ev' || { echo "Failed to split window for ev"; exit 1; }
-	@tmux split-window -h -t $(TMUX_SESSION):0.1 './$(BINSRC)/iec' || { echo "Failed to split window for iec"; exit 1; }
-	@tmux select-layout -t $(TMUX_SESSION):0 tiled
-	@tmux select-pane -t $(TMUX_SESSION):0.0
-	@tmux attach -t $(TMUX_SESSION) || echo "Failed to attach to tmux session"
+	@tmux new-session -d -s $(TMUX_SESSION) -n vmu './$(BINSRC)/vmu' \
+		&& tmux split-window -v './$(BINSRC)/ev' \
+		&& tmux split-window -h './$(BINSRC)/iec' \
+		&& tmux select-layout tiled \
+		&& tmux attach
 
-# — Open coverage report —
+# — Abre relatório de cobertura —
 show:
-	xdg-open $(COVERAGE_DIR)/index.html || echo "Failed to open coverage report"
+	xdg-open $(COVERAGE_DIR)/index.html || echo "Falha ao abrir o relatório de cobertura"
 
-# — Clean artifacts —
+# — Limpa artefatos —
 clean:
 	rm -rf $(BINSRC) $(BINTEST) $(COVERAGE_DIR) coverage.info
-	find . -name "*.gcda" -type f -delete
-	find . -name "*.gcno" -type f -delete
-	find . -name "*.o" -type f -delete
+	find . -name "*.gcda" -delete
+	find . -name "*.gcno" -delete
+	find . -name "*.o" -delete
 
-# — Kill tmux session —
+# — Encerra sessão tmux —
 kill:
-	@tmux kill-session -t $(TMUX_SESSION) || echo "No tmux session to kill"
-
+	@tmux kill-session -t $(TMUX_SESSION) || echo "Nenhuma sessão tmux para encerrar"
