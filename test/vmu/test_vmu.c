@@ -276,6 +276,8 @@ Suite *vmu_suite(void) {
     tcase_add_test(tc_core, test_vmu_control_engines_emergency_low_fuel);
     tcase_add_test(tc_core, test_vmu_control_engines_both_low);
     tcase_add_test(tc_core, test_vmu_control_engines_not_accelerating);
+    tcase_add_test(tc_core, test_handle_signal_kill);
+    tcase_add_test(tc_core, test_handle_signal_pause);
     suite_add_tcase(s, tc_core);
 
     return s;

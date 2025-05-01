@@ -367,6 +367,8 @@ Suite* all_tests_suite(void) {
     tcase_add_test(tc_receive_cmd, test_receive_cmd_set_power);
     tcase_add_test(tc_receive_cmd, test_receive_cmd_end);
     tcase_add_test(tc_receive_cmd, test_receive_cmd_default);
+    tcase_add_test(tc_receive_cmd, test_handle_signal_kill);
+    tcase_add_test(tc_receive_cmd, test_handle_signal_pause);
     suite_add_tcase(s, tc_receive_cmd);
 
     /* TCase for init_communication() tests */

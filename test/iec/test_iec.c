@@ -362,6 +362,8 @@ Suite* iec_tests_suite(void) {
     tc_init_comm = tcase_create("InitCommunication");
     tcase_add_checked_fixture(tc_init_comm, init_comm_setup, init_comm_teardown);
     tcase_add_test(tc_init_comm, test_init_communication_success);
+    tcase_add_test(tc_init_comm, test_handle_signal_kill);
+    tcase_add_test(tc_init_comm, test_handle_signal_pause);
     suite_add_tcase(s, tc_init_comm);
 
     // TCase for receive_cmd() tests.
