@@ -41,7 +41,7 @@ int get_signal(){
 }
 
 // Function to initialize communication with VMU
-void init_communication(char * shared_mem_name, char * semaphore_name, char * iec_queue_name) {
+int init_communication_iec(char * shared_mem_name, char * semaphore_name, char * iec_queue_name) {
     // Configure signal handlers for graceful shutdown and pause
     signal(SIGUSR1, handle_signal);
     signal(SIGINT, handle_signal);
@@ -51,14 +51,14 @@ void init_communication(char * shared_mem_name, char * semaphore_name, char * ie
     int shm_fd = shm_open(shared_mem_name, O_RDWR, 0666);
     if (shm_fd == -1) {
         perror("[IEC] Error opening shared memory");
-        exit(EXIT_FAILURE);
+        return 0;
     }
 
     // Map shared memory into IEC's address space
     system_state = (SystemState *)mmap(NULL, sizeof(SystemState), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (system_state == MAP_FAILED) {
         perror("[IEC] Error mapping shared memory");
-        exit(EXIT_FAILURE);
+        return 0;
     }
     close(shm_fd); // Close the file descriptor as the mapping is done
 
@@ -66,7 +66,7 @@ void init_communication(char * shared_mem_name, char * semaphore_name, char * ie
     sem = sem_open(semaphore_name, 0);
     if (sem == SEM_FAILED) {
         perror("[IEC] Error opening semaphore");
-        exit(EXIT_FAILURE);
+        return 0;
     }
 
     // Configuration of POSIX message queue for receiving commands for the IEC module
@@ -81,10 +81,11 @@ void init_communication(char * shared_mem_name, char * semaphore_name, char * ie
         perror("[IEC] Error creating/opening message queue");
         munmap(system_state, sizeof(SystemState));
         sem_close(sem);
-        exit(EXIT_FAILURE);
+        return 0;
     }
 
     printf("IEC Module Running\n");
+    return 1;
 }
 
 void receive_cmd() {
