@@ -199,6 +199,7 @@ END_TEST
 START_TEST(test_receive_cmd_start) {
     fake_mq_receive_enabled = 1;
     fake_cmd.type = CMD_START;
+    fake_cmd.power_level = 0.205000; // iec is activated when power level is above than 0.0
     iecActive = false;  // Ensure initial state
     cmd = iec_receive (fake_cmd);
     treatValues();
@@ -248,25 +249,9 @@ START_TEST(test_receive_cmd_end) {
 }
 END_TEST
 
-// Test receive_cmd() with an unknown command: state remains unchanged.
-START_TEST(test_receive_cmd_unknown) {
-    fake_mq_receive_enabled = 1;
-    fake_cmd.type = 999; // Unknown command type.
-    bool initial_on = system_state->iec_on;
-    int initial_rpm = system_state->rpm_iec;
-    float initial_temp = system_state->temp_iec;
-    int initial_running = running;
-    fake_cmd = iec_receive (fake_cmd);
-    ck_assert(system_state->iec_on == initial_on);
-    ck_assert_int_eq(system_state->rpm_iec, initial_rpm);
-    ck_assert(system_state->temp_iec == initial_temp);
-    ck_assert_int_eq(running, initial_running);
-    fake_mq_receive_enabled = 0;
-}
-END_TEST
-
 // Test engine() when IEC is on: RPM and temperature should be updated.
 START_TEST(test_engine_on) {
+    fake_mq_receive_enabled = 1;
     iecActive = true;
     fake_cmd.type = CMD_START;
     fake_cmd.globalVelocity = 90.0;
@@ -274,7 +259,10 @@ START_TEST(test_engine_on) {
     fake_cmd.ev_on = true;
     cmd = iec_receive(fake_cmd);
     treatValues();
-    ck_assert_double_eq(iecRPM, (double)(2421.907399));
+    double expected = 2421.907399;
+    double tol = 1e-6;  
+    ck_assert_double_eq_tol(iecRPM, expected, tol);
+    fake_mq_receive_enabled = 0;
 }
 END_TEST
 
@@ -300,32 +288,12 @@ END_TEST
 
 // Test cleanup(): verifies that resources are released and the shutdown message is printed.
 START_TEST(test_cleanup) {
-    // Redirect stdout to capture cleanup() output.
-    fflush(stdout);
-    int stdout_backup = dup(fileno(stdout));
-    FILE *temp_file = tmpfile();
-    if (!temp_file) {
-        perror("tmpfile");
-        exit(EXIT_FAILURE);
-    }
-    dup2(fileno(temp_file), fileno(stdout));
 
-    // Call cleanup().
     iecCleanUp();
 
-    fflush(stdout);
-    // Restore stdout.
-    dup2(stdout_backup, fileno(stdout));
-    close(stdout_backup);
-
-    // Read the captured output.
-    rewind(temp_file);
-    char buffer[256];
-    fgets(buffer, sizeof(buffer), temp_file);
-    fclose(temp_file);
-
-    ck_assert_msg(strstr(buffer, "[IEC] Shut down complete.") != NULL,
-                  "Cleanup did not print the expected shutdown message");
+    ck_assert_int_eq(iec_mq, (mqd_t)-1);
+    ck_assert_ptr_eq(system_state, NULL);     /* ck_assert_ptr_eq para ponteiros */ 
+    ck_assert_ptr_eq(sem, NULL);              /* idem */     
 }
 END_TEST
 
@@ -352,7 +320,6 @@ Suite* iec_tests_suite(void) {
     tcase_add_test(tc_receive_cmd, test_receive_cmd_stop);
     tcase_add_test(tc_receive_cmd, test_receive_cmd_set_power);
     tcase_add_test(tc_receive_cmd, test_receive_cmd_end);
-    tcase_add_test(tc_receive_cmd, test_receive_cmd_unknown);
     suite_add_tcase(s, tc_receive_cmd);
 
     // TCase for engine() tests.

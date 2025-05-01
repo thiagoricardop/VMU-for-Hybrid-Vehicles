@@ -198,7 +198,16 @@ void treatValues() {
 }
 
 void iecCleanUp () {
-    mq_close(iec_mq);
-    munmap(system_state, sizeof(SystemState));
-    sem_close(sem);
+    
+    if (mq_close(iec_mq) == 0) {
+        iec_mq = (mqd_t) - 1;
+    }
+    
+    if (munmap(system_state, sizeof(SystemState)) == 0) {
+        system_state = NULL;
+    }
+
+    if (sem_close(sem) == 0) {
+        sem = NULL;
+    }
 }
