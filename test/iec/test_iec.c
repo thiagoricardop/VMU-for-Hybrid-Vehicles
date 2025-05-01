@@ -194,11 +194,20 @@ void cleanup_teardown(void) {
 
 // Test init_communication(): verifies that shared memory, semaphore, and message queue are set up.
 START_TEST(test_init_communication_success) {
-    init_communication();
+    init_communication(SHARED_MEM_NAME, SEMAPHORE_NAME, IEC_COMMAND_QUEUE_NAME);
     ck_assert_ptr_nonnull(system_state);
     ck_assert_ptr_ne(system_state, MAP_FAILED);
     ck_assert_ptr_nonnull(sem);
     ck_assert_int_ne(iec_mq_receive, (mqd_t)-1);
+}
+END_TEST
+
+START_TEST(test_init_communication_fail) {
+    init_communication("fail 1", "fail 2", "fail 3");
+    ck_assert_ptr_null(system_state);
+    ck_assert_ptr_eq(system_state, MAP_FAILED);
+    ck_assert_ptr_null(sem);
+    ck_assert_int_eq(iec_mq_receive, (mqd_t)-1);
 }
 END_TEST
 
@@ -362,6 +371,7 @@ Suite* iec_tests_suite(void) {
     tc_init_comm = tcase_create("InitCommunication");
     tcase_add_checked_fixture(tc_init_comm, init_comm_setup, init_comm_teardown);
     tcase_add_test(tc_init_comm, test_init_communication_success);
+    tcase_add_test(tc_init_comm, test_init_communication_fail);
     tcase_add_test(tc_init_comm, test_handle_signal_kill);
     tcase_add_test(tc_init_comm, test_handle_signal_pause);
     suite_add_tcase(s, tc_init_comm);

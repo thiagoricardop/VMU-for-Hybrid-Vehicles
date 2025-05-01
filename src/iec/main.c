@@ -2,10 +2,11 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include "iec.c"
+#include "../vmu/vmu.h"
 
 int main() {
     system("clear");
-    init_communication(); // Initialize communication with VMU
+    init_communication(SHARED_MEM_NAME, SEMAPHORE_NAME, IEC_COMMAND_QUEUE_NAME); // Initialize communication with VMU
     // Main loop of the IEC module
     while (running) {
         if (!paused) {

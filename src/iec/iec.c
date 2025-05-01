@@ -41,14 +41,14 @@ int get_signal(){
 }
 
 // Function to initialize communication with VMU
-void init_communication() {
+void init_communication(char * shared_mem_name, char * semaphore_name, char * iec_queue_name) {
     // Configure signal handlers for graceful shutdown and pause
     signal(SIGUSR1, handle_signal);
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
     // Configuration of shared memory for IEC
-    int shm_fd = shm_open(SHARED_MEM_NAME, O_RDWR, 0666);
+    int shm_fd = shm_open(shared_mem_name, O_RDWR, 0666);
     if (shm_fd == -1) {
         perror("[IEC] Error opening shared memory");
         exit(EXIT_FAILURE);
@@ -63,7 +63,7 @@ void init_communication() {
     close(shm_fd); // Close the file descriptor as the mapping is done
 
     // Open the semaphore for synchronization (it should already be created by VMU)
-    sem = sem_open(SEMAPHORE_NAME, 0);
+    sem = sem_open(semaphore_name, 0);
     if (sem == SEM_FAILED) {
         perror("[IEC] Error opening semaphore");
         exit(EXIT_FAILURE);
@@ -76,7 +76,7 @@ void init_communication() {
     iec_mq_attributes.mq_msgsize = sizeof(EngineCommand);
     iec_mq_attributes.mq_curmsgs = 0;
 
-    iec_mq_receive = mq_open(IEC_COMMAND_QUEUE_NAME, O_RDONLY | O_CREAT | O_NONBLOCK, 0666, &iec_mq_attributes);
+    iec_mq_receive = mq_open(iec_queue_name, O_RDONLY | O_CREAT | O_NONBLOCK, 0666, &iec_mq_attributes);
     if (iec_mq_receive == (mqd_t)-1) {
         perror("[IEC] Error creating/opening message queue");
         munmap(system_state, sizeof(SystemState));
