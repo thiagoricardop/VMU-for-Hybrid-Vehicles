@@ -15,13 +15,14 @@
 #include "../vmu/vmu.h"
 
 // Global variables
-SystemState *system_state; // Pointer to the shared memory structure holding the system state
+SystemState *system_state = MAP_FAILED; // Pointer to the shared memory structure holding the system state
 sem_t *sem;                // Pointer to the semaphore for synchronizing access to shared memory
-mqd_t iec_mq_receive;     // Message queue descriptor for receiving commands for the IEC module
+mqd_t iec_mq_receive = (mqd_t)-1;     // Message queue descriptor for receiving commands for the IEC module
 volatile sig_atomic_t running = 1; // Flag to control the main loop, volatile to ensure visibility across threads
 volatile sig_atomic_t paused = 0;  // Flag to indicate if the simulation is paused
 EngineCommand cmd; // Structure to hold the received command
 int signal_type = -1;
+int shm_fd = -1; //Shared Memory File Descriptor
 
 // Function to handle signals (SIGUSR1 for pause, SIGINT/SIGTERM for shutdown)
 void handle_signal(int sig) {
@@ -48,7 +49,7 @@ int init_communication_iec(char * shared_mem_name, char * semaphore_name, char *
     signal(SIGTERM, handle_signal);
 
     // Configuration of shared memory for IEC
-    int shm_fd = shm_open(shared_mem_name, O_RDWR, 0666);
+    shm_fd = shm_open(shared_mem_name, O_RDWR, 0666);
     if (shm_fd == -1) {
         perror("[IEC] Error opening shared memory");
         return 0;

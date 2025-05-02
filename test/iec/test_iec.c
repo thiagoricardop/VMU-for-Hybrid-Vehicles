@@ -21,6 +21,7 @@ extern sem_t *sem;
 extern mqd_t iec_mq_receive;   // Message queue descriptor for IEC commands
 extern volatile sig_atomic_t running;
 extern EngineCommand cmd;      // Global command structure
+extern int shm_fd; //Shared Memory File Descriptor
 
 // ------------------------------------------------------------------------
 // Test Overrides
@@ -202,12 +203,45 @@ START_TEST(test_init_communication_success) {
 }
 END_TEST
 
-START_TEST(test_init_communication_fail) {
+START_TEST(test_init_communication_shm_fd_fail) {
     init_communication_iec("fail 1", "fail 2", "fail 3");
-    ck_assert_ptr_null(system_state);
-    // ck_assert_ptr_eq(system_state, MAP_FAILED);
-    ck_assert_ptr_null(sem);
-    // ck_assert_int_eq(iec_mq_receive, (mqd_t)-1);
+    ck_assert_int_eq(shm_fd, -1);
+}
+END_TEST
+
+START_TEST(test_init_communication_sem_fail) {
+    shm_fd = shm_open(SHARED_MEM_NAME, O_CREAT | O_RDWR, 0666);
+    if(shm_fd == -1){
+        perror("[IEC] Error opening shared Memory");
+        exit(EXIT_FAILURE);
+    }
+    close(shm_fd);
+
+    init_communication_iec(SHARED_MEM_NAME, "fail 2", "fail 3");
+    ck_assert_ptr_eq(sem, SEM_FAILED);
+    shm_unlink(SHARED_MEM_NAME);
+}
+END_TEST
+
+START_TEST(test_init_communication_iec_queue_fail) {
+    shm_fd = shm_open(SHARED_MEM_NAME, O_CREAT | O_RDWR, 0666);
+    if(shm_fd == -1){
+        perror("[IEC] Error opening shared Memory");
+        exit(EXIT_FAILURE);
+    }
+    close(shm_fd);
+
+    sem = sem_open(SEMAPHORE_NAME, O_CREAT, 0666, 1);
+    if(sem == SEM_FAILED){
+        perror("[IEC] Error opening semaphore");
+        exit(EXIT_FAILURE);
+    }
+    sem_close(sem);
+
+    init_communication_iec(SHARED_MEM_NAME, SEMAPHORE_NAME, "fail 3");
+    ck_assert_int_eq(iec_mq_receive, (mqd_t) - 1);
+    shm_unlink(SHARED_MEM_NAME);
+    sem_unlink(SEMAPHORE_NAME);
 }
 END_TEST
 
@@ -377,7 +411,9 @@ Suite* iec_tests_suite(void) {
 
     //TCase for init_communication() with fail
     tc_init_comm_fail = tcase_create("InitCommunicationFail");
-    tcase_add_test(tc_init_comm_fail, test_init_communication_fail);
+    tcase_add_test(tc_init_comm_fail, test_init_communication_shm_fd_fail);
+    tcase_add_test(tc_init_comm_fail, test_init_communication_sem_fail);
+    tcase_add_test(tc_init_comm_fail, test_init_communication_iec_queue_fail);
     suite_add_tcase(s, tc_init_comm_fail);
 
     // TCase for receive_cmd() tests.

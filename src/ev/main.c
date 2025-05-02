@@ -6,7 +6,10 @@
 
 int main() {
     system("clear");
-    init_communication(); // Initialize communication with VMU
+    // Initialize communication with VMU
+    if(init_communication_ev(SHARED_MEM_NAME, SEMAPHORE_NAME, EV_COMMAND_QUEUE_NAME) == 0){
+        exit(EXIT_FAILURE);
+    } 
     
     // Main loop of the EV module
     while (running) {

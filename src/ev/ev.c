@@ -22,6 +22,7 @@ volatile sig_atomic_t running = 1; // Flag to control the main loop, volatile to
 volatile sig_atomic_t paused = 0;  // Flag to indicate if the simulation is paused
 EngineCommand cmd; // Structure to hold the received command
 int signal_type = -1;
+int shm_fd = -1; //Shared Memory File Descriptor
 
 // Function to handle signals (SIGUSR1 for pause, SIGINT/SIGTERM for shutdown)
 void handle_signal(int sig) {
@@ -40,32 +41,32 @@ int get_signal(){
     return signal_type;
 }
 
-void init_communication() {
+int init_communication_ev(char * shared_mem_name, char * semaphore_name, char * ev_queue_name) {
     // Configure signal handlers for graceful shutdown and pause
     signal(SIGUSR1, handle_signal);
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
     // Configuration of shared memory for EV
-    int shm_fd = shm_open(SHARED_MEM_NAME, O_RDWR, 0666);
+    shm_fd = shm_open(shared_mem_name, O_RDWR, 0666);
     if (shm_fd == -1) {
         perror("[EV] Error opening shared memory");
-        exit(EXIT_FAILURE);
+        return 0;
     }
 
     // Map shared memory into EV's address space
     system_state = (SystemState *)mmap(NULL, sizeof(SystemState), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (system_state == MAP_FAILED) {
         perror("[EV] Error mapping shared memory");
-        exit(EXIT_FAILURE);
+        return 0;
     }
     close(shm_fd); // Close the file descriptor as the mapping is done
 
     // Open the semaphore for synchronization (it should already be created by VMU)
-    sem = sem_open(SEMAPHORE_NAME, 0);
+    sem = sem_open(semaphore_name, 0);
     if (sem == SEM_FAILED) {
         perror("[EV] Error opening semaphore");
-        exit(EXIT_FAILURE);
+        return 0;
     }
 
     // Configuration of POSIX message queue for receiving commands for the EV module
@@ -75,15 +76,16 @@ void init_communication() {
     ev_mq_attributes.mq_msgsize = sizeof(EngineCommand);
     ev_mq_attributes.mq_curmsgs = 0;
 
-    ev_mq_receive = mq_open(EV_COMMAND_QUEUE_NAME, O_RDONLY | O_CREAT | O_NONBLOCK, 0666, &ev_mq_attributes);
+    ev_mq_receive = mq_open(ev_queue_name, O_RDONLY | O_CREAT | O_NONBLOCK, 0666, &ev_mq_attributes);
     if (ev_mq_receive == (mqd_t)-1) {
         perror("[EV] Error creating/opening message queue");
         munmap(system_state, sizeof(SystemState));
         sem_close(sem);
-        exit(EXIT_FAILURE);
+        return 0;
     }
 
     printf("EV Module Running\n");
+    return 1;
 }
 
 void receive_cmd(){

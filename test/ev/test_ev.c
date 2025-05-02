@@ -19,6 +19,7 @@ extern SystemState *system_state;
 extern sem_t *sem;
 extern volatile sig_atomic_t running;
 extern mqd_t ev_mq_receive; // Message queue descriptor
+extern int shm_fd; //Shared Memory File Descriptor
 
 // For testing, we simulate the message queue behavior by overriding mq_receive.
 // A flag and a fake command will control the behavior.
@@ -197,11 +198,53 @@ void init_comm_teardown(void) {
 
 // Test: init_communication() initializes shared memory, semaphore, and message queue.
 START_TEST(test_init_communication_success) {
-    init_communication();
+    init_communication_ev(SHARED_MEM_NAME, SEMAPHORE_NAME, EV_COMMAND_QUEUE_NAME);
     ck_assert_ptr_nonnull(system_state);
     ck_assert_ptr_ne(system_state, MAP_FAILED);
     ck_assert_ptr_nonnull(sem);
     ck_assert_int_ne(ev_mq_receive, (mqd_t)-1);
+}
+END_TEST
+
+START_TEST(test_init_communication_shm_fd_fail) {
+    init_communication_ev("fail 1", "fail 2", "fail 3");
+    ck_assert_int_eq(shm_fd, -1);
+}
+END_TEST
+
+START_TEST(test_init_communication_sem_fail) {
+    shm_fd = shm_open(SHARED_MEM_NAME, O_CREAT | O_RDWR, 0666);
+    if(shm_fd == -1){
+        perror("[IEC] Error opening shared Memory");
+        exit(EXIT_FAILURE);
+    }
+    close(shm_fd);
+
+    init_communication_ev(SHARED_MEM_NAME, "fail 2", "fail 3");
+    ck_assert_ptr_eq(sem, SEM_FAILED);
+    shm_unlink(SHARED_MEM_NAME);
+}
+END_TEST
+
+START_TEST(test_init_communication_ev_queue_fail) {
+    shm_fd = shm_open(SHARED_MEM_NAME, O_CREAT | O_RDWR, 0666);
+    if(shm_fd == -1){
+        perror("[IEC] Error opening shared Memory");
+        exit(EXIT_FAILURE);
+    }
+    close(shm_fd);
+
+    sem = sem_open(SEMAPHORE_NAME, O_CREAT, 0666, 1);
+    if(sem == SEM_FAILED){
+        perror("[IEC] Error opening semaphore");
+        exit(EXIT_FAILURE);
+    }
+    sem_close(sem);
+
+    init_communication_ev(SHARED_MEM_NAME, SEMAPHORE_NAME, "fail 3");
+    ck_assert_int_eq(ev_mq_receive, (mqd_t) - 1);
+    shm_unlink(SHARED_MEM_NAME);
+    sem_unlink(SEMAPHORE_NAME);
 }
 END_TEST
 
@@ -355,7 +398,7 @@ END_TEST
  ************************************/
 Suite* all_tests_suite(void) {
     Suite *s;
-    TCase *tc_receive_cmd, *tc_init_comm, *tc_engine, *tc_cleanup;
+    TCase *tc_receive_cmd, *tc_init_comm, *tc_init_comm_fail, *tc_engine, *tc_cleanup;
 
     s = suite_create("AllTests");
 
@@ -376,6 +419,13 @@ Suite* all_tests_suite(void) {
     tcase_add_checked_fixture(tc_init_comm, init_comm_setup, init_comm_teardown);
     tcase_add_test(tc_init_comm, test_init_communication_success);
     suite_add_tcase(s, tc_init_comm);
+
+    /* TCase for init_communication() fail tests */
+    tc_init_comm_fail = tcase_create("InitCommunication");
+    tcase_add_test(tc_init_comm_fail, test_init_communication_shm_fd_fail);
+    tcase_add_test(tc_init_comm_fail, test_init_communication_sem_fail);
+    tcase_add_test(tc_init_comm_fail, test_init_communication_ev_queue_fail);
+    suite_add_tcase(s, tc_init_comm_fail);
 
     /* TCase for engine() tests */
     tc_engine = tcase_create("Engine");
