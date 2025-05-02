@@ -7,7 +7,7 @@
 #define IEC_TEMP_DECREASE_RATE 0.01 // Rate of temperature decrease per loop iteration when off/idling
 
 void handle_signal(int sig);
-void init_communication();
+void init_communication_iec();
 void receive_cmd();
 void engine();
 void cleanup();

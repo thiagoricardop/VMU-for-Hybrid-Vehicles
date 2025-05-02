@@ -186,14 +186,9 @@ double calculate_speed(SystemState *state) {
         speed_change = -deceleration;
         
         // Additional braking force if brake is pressed
-        if (is_braking && current_speed_kmh > 0.5) {
+        if (is_braking && current_speed_kmh > 0.001) {
             // Simple linear braking model
             double brake_force = 10; // Base braking rate
-            
-            // Reduced braking effectiveness at very low speeds
-            if (current_speed_kmh < 10.0) {
-                brake_force *= current_speed_kmh / 10.0;
-            }
             
             speed_change -= brake_force; 
         }
@@ -623,20 +618,20 @@ void init_communication(){
     int shm_fd = shm_open(SHARED_MEM_NAME, O_CREAT | O_RDWR, 0666);
     if (shm_fd == -1) {
         perror("[VMU] Error opening shared memory");
-        exit(EXIT_FAILURE);
+        running = 0; // Exit main loop
     }
 
     // Configure the size of the shared memory
     if (ftruncate(shm_fd, sizeof(SystemState)) == -1) {
         perror("[VMU] Error configuring shared memory size");
-        exit(EXIT_FAILURE);
+        running = 0; // Exit main loop
     }
 
     // Map shared memory into VMU's address space
     system_state = (SystemState *)mmap(NULL, sizeof(SystemState), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (system_state == MAP_FAILED) {
         perror("[VMU] Error mapping shared memory");
-        exit(EXIT_FAILURE);
+        running = 0; // Exit main loop
     }
     close(shm_fd);
 
@@ -644,7 +639,7 @@ void init_communication(){
     sem = sem_open(SEMAPHORE_NAME, O_CREAT, 0666, 1);
     if (sem == SEM_FAILED) {
         perror("[VMU] Error creating semaphore");
-        exit(EXIT_FAILURE);
+        running = 0; // Exit main loop
     }
 
     // Initialize system state
@@ -664,7 +659,7 @@ void init_communication(){
         shm_unlink(SHARED_MEM_NAME);
         sem_close(sem);
         sem_unlink(SEMAPHORE_NAME);
-        exit(EXIT_FAILURE);
+        running = 0; // Exit main loop
     }
 
     // Configuration of POSIX message queues for communication with the IEC module
@@ -683,7 +678,7 @@ void init_communication(){
         shm_unlink(SHARED_MEM_NAME);
         sem_close(sem);
         sem_unlink(SEMAPHORE_NAME);
-        exit(EXIT_FAILURE);
+        running = 0; // Exit main loop
     }
 
     printf("VMU Module Running\n");
@@ -729,28 +724,6 @@ void *read_input(void *arg) {
             set_braking(false);
             set_acceleration(false);
             
-            // Desligar motores diretamente
-            bool ev_on_current, iec_on_current;
-            
-            sem_wait(sem);
-            ev_on_current = system_state->ev_on;
-            iec_on_current = system_state->iec_on;
-            system_state->ev_on = false;
-            system_state->iec_on = false;
-            sem_post(sem);
-            
-            // Enviar comandos para os módulos apenas se estiverem ligados
-            EngineCommand cmd;
-            cmd.type = CMD_STOP;
-            
-            if (ev_on_current) {
-                mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
-            }
-            
-            if (iec_on_current) {
-                mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
-            }
-            
         } else if (strcmp(input, "1") == 0) {
             set_acceleration(true);
             set_braking(false);
@@ -758,27 +731,6 @@ void *read_input(void *arg) {
             set_acceleration(false);
             set_braking(true);
             
-            // Desligar motores diretamente
-            bool ev_on_current, iec_on_current;
-            
-            sem_wait(sem);
-            ev_on_current = system_state->ev_on;
-            iec_on_current = system_state->iec_on;
-            system_state->ev_on = false;
-            system_state->iec_on = false;
-            sem_post(sem);
-            
-            // Enviar comandos para os módulos apenas se estiverem ligados
-            EngineCommand cmd;
-            cmd.type = CMD_STOP;
-            
-            if (ev_on_current) {
-                mq_send(ev_mq, (const char *)&cmd, sizeof(cmd), 0);
-            }
-            
-            if (iec_on_current) {
-                mq_send(iec_mq, (const char *)&cmd, sizeof(cmd), 0);
-            }
         }
         usleep(10000); // Small delay to avoid busy-waiting
     }

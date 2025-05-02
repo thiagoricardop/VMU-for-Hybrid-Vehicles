@@ -20,6 +20,7 @@
 #define MIN_SPEED 0.0           // Minimum vehicle speed (km/h)
 #define MAX_BATTERY 100.0       // Maximum battery charge (%)
 #define MAX_FUEL 100.0          // Maximum fuel level (%)
+#define MAX_IEC_TEMP 105
 
 // Hybrid Logic Constants
 #define EV_ONLY_SPEED_LIMIT 60.0 // Max speed when on EV only due to low fuel
@@ -92,7 +93,8 @@ typedef enum {
     CMD_START,
     CMD_STOP,
     CMD_SET_POWER,
-    CMD_END
+    CMD_END,
+    CMD_UNKNOWN
 } CommandType;
 
 // Structure for engine commands
