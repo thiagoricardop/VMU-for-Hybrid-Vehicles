@@ -12,8 +12,7 @@ CC           := gcc
 CFLAGS := -pthread -lrt -lm --coverage \
           -I. -Isrc/vmu -Isrc/ev -Isrc/iec \
           -fprofile-arcs \
-          -ftest-coverage \
-          -fprofile-dir=$(BINSRC)
+          -ftest-coverage
 
 CFLAGS_TEST  := $(CFLAGS) -DTESTING 
 LDLIBS       := -lcheck -pthread -lm -lsubunit
@@ -115,10 +114,33 @@ test: $(TESTS)
 		./$$t; \
 	done
 
+LCOV_GCOV_TOOL := gcov-14
+
 # — Relatório de cobertura —
-coverage: test
-	lcov --capture --directory $(BINSRC) --output-file coverage.info --branch-coverage
-	genhtml coverage.info --output-directory $(COVERAGE_DIR) --branch-coverage
+coverage: clean all test
+	# Zera contadores apenas no bin/
+	lcov --zerocounters --directory bin/
+
+	# Executa testes (que geram .gcda em bin/)
+	for t in bin/test/*; do ./$$t; done
+
+	# Captura cobertura apenas em bin/, usando gcov-14
+	lcov --capture \
+	     --directory bin/ \
+	     --gcov-tool $(LCOV_GCOV_TOOL) \
+	     --output-file coverage.info
+
+	# Filtra arquivos externos e de teste
+	lcov --remove coverage.info '/usr/*' '*/test_*' \
+	     --output-file coverage_filtered.info
+
+	# Gera relatório
+	genhtml --branch-coverage \
+	        --output-directory coverage_html \
+	        coverage_filtered.info
+
+	@echo "Relatório disponível em coverage_html/index.html"
+
 
 # — Executa em tmux —
 run: all
