@@ -1,14 +1,14 @@
-# — Diretórios —
+# — Diretories —
 SRC_DIR      := src
 TEST_DIR     := test
 BINSRC       := bin
 BINTEST := $(BINSRC)/test
 COVERAGE_DIR := coverage
 
-# — Compilador e flags —
+# — Compiler and flags —
 CC           := gcc
 
-# Flags de cobertura: gera .gcno ao lado de .o, emite .gcda em BINSRC
+# Coverage flags: generate .gcno beside of .o and emit .gcda at bin diretory
 CFLAGS := -pthread -lrt -lm --coverage \
           -I. -Isrc/vmu -Isrc/ev -Isrc/iec \
           -fprofile-arcs \
@@ -22,7 +22,7 @@ EXECS        := $(addprefix $(BINSRC)/, $(MODULES))
 
 TMUX_SESSION := sistema
 
-# — Arquivos fonte e objetos para cada módulo —
+# — Source files and objects for each module —
 VMU_SRCS := $(filter-out src/vmu/main.c,$(wildcard src/vmu/*.c))
 VMU_OBJS := $(patsubst src/vmu/%.c,$(BINSRC)/%.o,$(VMU_SRCS))
 VMU_MAIN := $(BINSRC)/main_vmu.o
@@ -42,26 +42,26 @@ TEST_SRCS := $(wildcard $(TEST_DIR)/vmu/test_vmu.c \
                        $(TEST_DIR)/ev/test_ev.c \
                        $(TEST_DIR)/iec/test_iec.c)
 
-# Objetos de teste: bin/test_vmu.o, bin/test_ev.o, bin/test_iec.o
+# Test objects: bin/test_vmu.o, bin/test_ev.o, bin/test_iec.o
 TEST_OBJS := $(patsubst $(TEST_DIR)/%/test_%.c,$(BINSRC)/test_%.o,$(TEST_SRCS))
 
 TESTS := $(BINTEST)/test_vmu $(BINTEST)/test_ev $(BINTEST)/test_iec
 
-# — Alvos fictícios e secundários —
+# — All Makefile commands —
 .PHONY: all test coverage run show clean kill
 .SECONDARY: $(BINSRC)/%.o
 
-# — Alvo padrão: compila aplicações —
+# — Standard target: compile project —
 all: $(EXECS)
 
-# — Cria diretório bin se necessário —
+# — Create bin diretory if necessary —
 $(BINSRC):
 	mkdir -p $@
 
 $(BINTEST): | $(BINSRC)
 	mkdir -p $@
 
-# — Regras de compilação para cada módulo —
+# — Compilation rules for each module —
 $(BINSRC)/%.o: src/vmu/%.c | $(BINSRC)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -71,11 +71,11 @@ $(BINSRC)/%.o: src/ev/%.c | $(BINSRC)
 $(BINSRC)/%.o: src/iec/%.c | $(BINSRC)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# — Compila main de cada módulo —
+# — Compile main of each module —
 $(BINSRC)/main_%.o: src/%/main.c | $(BINSRC)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# — Linka executáveis —
+# — Link executables —
 $(BINSRC)/vmu: $(VMU_APP)
 	$(CC) $^ -o $@ $(CFLAGS) $(LDLIBS)
 
@@ -85,7 +85,7 @@ $(BINSRC)/ev: $(EV_APP)
 $(BINSRC)/iec: $(IEC_APP)
 	$(CC) $^ -o $@ $(CFLAGS) $(LDLIBS)
 
-# 1) Regra explícita para cada objeto de teste
+# 1) Rules for each test object
 $(BINSRC)/test_vmu.o: $(TEST_DIR)/vmu/test_vmu.c | $(BINSRC)
 	$(CC) $(CFLAGS_TEST) -c $< -o $@
 
@@ -95,8 +95,8 @@ $(BINSRC)/test_ev.o: $(TEST_DIR)/ev/test_ev.c | $(BINSRC)
 $(BINSRC)/test_iec.o: $(TEST_DIR)/iec/test_iec.c | $(BINSRC)
 	$(CC) $(CFLAGS_TEST) -c $< -o $@
 
-# 2) Link: gera bin/test/test_vmu, bin/test/test_ev, bin/test/test_iec
-#    Usa cada objeto de teste + objetos já compilados da aplicação
+# 2) Link: generate bin/test/test_vmu, bin/test/test_ev, bin/test/test_iec
+#    Use each test object + already compiled objects
 $(BINTEST)/test_vmu: $(BINSRC)/test_vmu.o $(VMU_OBJS) | $(BINTEST)
 	$(CC) $^ -o $@ $(CFLAGS_TEST) $(LDLIBS)
 
@@ -106,7 +106,7 @@ $(BINTEST)/test_ev:  $(BINSRC)/test_ev.o  $(EV_OBJS) | $(BINTEST)
 $(BINTEST)/test_iec: $(BINSRC)/test_iec.o $(IEC_OBJS) | $(BINTEST)
 	$(CC) $^ -o $@ $(CFLAGS_TEST) $(LDLIBS)
 
-# — Executa testes —
+# — Run tests —
 test: $(TESTS)
 	@echo ">>> Entrou no target test <<<"
 	@for t in $^; do \
@@ -116,25 +116,25 @@ test: $(TESTS)
 
 LCOV_GCOV_TOOL := gcov-14
 
-# — Relatório de cobertura —
+# — Coverage report —
 coverage: clean all test
-	# Zera contadores apenas no bin/
+	# Reset counters only at bin/
 	lcov --zerocounters --directory bin/
 
-	# Executa testes (que geram .gcda em bin/)
+	# Run tests (that generate .gcda at bin/)
 	for t in bin/test/*; do ./$$t; done
 
-	# Captura cobertura apenas em bin/, usando gcov-14
+	# Capture coverage only at bin/, using gcov-14
 	lcov --capture \
 	     --directory bin/ \
 	     --gcov-tool $(LCOV_GCOV_TOOL) \
 	     --output-file coverage.info
 
-	# Filtra arquivos externos e de teste
+	# Filter external files and test files
 	lcov --remove coverage.info '/usr/*' '*/test_*' \
 	     --output-file coverage_filtered.info
 
-	# Gera relatório
+	# Generate report
 	genhtml --branch-coverage \
 	        --output-directory coverage_html \
 	        coverage_filtered.info
@@ -142,7 +142,7 @@ coverage: clean all test
 	@echo "Relatório disponível em coverage_html/index.html"
 
 
-# — Executa em tmux —
+# — Run aplication at tmux —
 run: all
 	@tmux new-session -d -s $(TMUX_SESSION) -n vmu './$(BINSRC)/vmu' \
 		&& tmux split-window -v './$(BINSRC)/ev' \
@@ -150,17 +150,17 @@ run: all
 		&& tmux select-layout tiled \
 		&& tmux attach
 
-# — Abre relatório de cobertura —
+# — Open coverage report —
 show:
 	xdg-open $(COVERAGE_DIR)/index.html || echo "Falha ao abrir o relatório de cobertura"
 
-# — Limpa artefatos —
+# — Clean executable objects —
 clean:
 	rm -rf $(BINSRC) $(BINTEST) $(COVERAGE_DIR) coverage.info
 	find . -name "*.gcda" -delete
 	find . -name "*.gcno" -delete
 	find . -name "*.o" -delete
 
-# — Encerra sessão tmux —
+# — End tmux session —
 kill:
 	@tmux kill-session -t $(TMUX_SESSION) || echo "Nenhuma sessão tmux para encerrar"
