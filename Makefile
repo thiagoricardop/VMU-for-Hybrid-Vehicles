@@ -9,10 +9,8 @@ COVERAGE_DIR := coverage
 CC           := gcc
 
 # Coverage flags: generate .gcno beside of .o and emit .gcda at bin diretory
-CFLAGS := -pthread -lrt -lm --coverage \
-          -I. -Isrc/vmu -Isrc/ev -Isrc/iec \
-          -fprofile-arcs \
-          -ftest-coverage
+CFLAGS := -g -O0 -fprofile-arcs -ftest-coverage --coverage 
+
 
 CFLAGS_TEST  := $(CFLAGS) -DTESTING 
 LDLIBS       := -lcheck -pthread -lm -lsubunit
@@ -118,29 +116,45 @@ LCOV_GCOV_TOOL := gcov-14
 
 # — Coverage report —
 coverage: clean all test
-	# Reset counters only at bin/
-	lcov --zerocounters --directory bin/
+	# 1) Zera contadores
+	lcov --zerocounters --directory bin/ \
+	     --rc lcov_branch_coverage=1
 
-	# Run tests (that generate .gcda at bin/)
+	# 2) Captura baseline estático (.gcno)
+	lcov --capture --initial \
+	     --gcov-tool gcov-14 \
+	     --directory bin/ \
+	     --output-file coverage_base.info \
+	     --rc lcov_branch_coverage=1
+
+	# 3) Executa testes (.gcda)
 	for t in bin/test/*; do ./$$t; done
 
-	# Capture coverage only at bin/, using gcov-14
+	# 4) Captura cobertura dinâmica (.gcda)
 	lcov --capture \
+	     --gcov-tool gcov-14 \
 	     --directory bin/ \
-	     --gcov-tool $(LCOV_GCOV_TOOL) \
-	     --output-file coverage.info
+	     --output-file coverage_test.info \
+	     --rc lcov_branch_coverage=1
 
-	# Filter external files and test files
+	# 5) Mescla baseline + teste
+	lcov -a coverage_base.info \
+	     -a coverage_test.info \
+	     -o coverage.info \
+	     --rc lcov_branch_coverage=1
+
+	# 6) Filtra arquivos irrelevantes
 	lcov --remove coverage.info '/usr/*' '*/test_*' \
-	     --output-file coverage_filtered.info
+	     --output-file coverage_filtered.info \
+	     --rc lcov_branch_coverage=1
 
-	# Generate report
-	genhtml --branch-coverage \
+	# 7) Gera relatório HTML com cobertura de ramos
+	genhtml coverage_filtered.info \
+	        --branch-coverage \
 	        --output-directory coverage_html \
-	        coverage_filtered.info
+	        --rc genhtml_branch_coverage=1
 
 	@echo "Relatório disponível em coverage_html/index.html"
-
 
 # — Run aplication at tmux —
 run: all
