@@ -11,16 +11,30 @@
 #include <signal.h>
 #include <errno.h>
 #include <math.h>
+#include <string.h>
 #include "ev.h"
+
 #include "../vmu/vmu.h"
 
 // Global variables
 SystemState *system_state; // Pointer to the shared memory structure holding the system state
 sem_t *sem;                // Pointer to the semaphore for synchronizing access to shared memory
-mqd_t ev_mq_receive;      // Message queue descriptor for receiving commands for the EV module
+mqd_t ev_mq;      // Message queue descriptor for receiving commands for the EV module
+EngineCommandEV cmd; // Structure to hold the received command
 volatile sig_atomic_t running = 1; // Flag to control the main loop, volatile to ensure visibility across threads
 volatile sig_atomic_t paused = 0;  // Flag to indicate if the simulation is paused
-EngineCommand cmd; // Structure to hold the received command
+double BatteryEV = 11.5;
+double evPercentage = 0.0;
+bool firstReceive = true;
+double localVelocity = 0.0;
+double lastLocalVelocity = 0.0;
+double distance = 3000;
+double rpmEV;
+double tireCircunferenceRatio = 2.19912;
+bool evActive;
+bool accelerator;
+unsigned char counter = 0;
+double fuel = 0.0;
 
 // Function to handle signals (SIGUSR1 for pause, SIGINT/SIGTERM for shutdown)
 void handle_signal(int sig) {
@@ -33,109 +47,181 @@ void handle_signal(int sig) {
     }
 }
 
-void init_communication() {
-    // Configure signal handlers for graceful shutdown and pause
-    signal(SIGUSR1, handle_signal);
-    signal(SIGINT, handle_signal);
-    signal(SIGTERM, handle_signal);
 
-    // Configuration of shared memory for EV
-    int shm_fd = shm_open(SHARED_MEM_NAME, O_RDWR, 0666);
-    if (shm_fd == -1) {
-        perror("[EV] Error opening shared memory");
-        exit(EXIT_FAILURE);
+EvStatusType ev_initializer(void) {
+
+    EvStatusType status = 0;               /* status de retorno (único ponto de saída) (@turn0search0) */
+    int32_t shm_fd = -1;
+    uintptr_t shm_addr = 0U;            /* evitar Rule 11.5 (@turn1search1) */
+    sem_t *tmp_sem = (sem_t *)0;
+    mqd_t  tmp_mq = (mqd_t)-1;
+
+    /* 1) Abrir memória compartilhada */
+    shm_fd = shm_open(SHARED_MEM_NAME, EV_SHM_FLAGS | O_CREAT, EV_SHM_PERMS);
+    if (shm_fd < 0) {
+        perror("[EV] shm_open falhou");
+        status = EXIT_FAILURE;
+        goto cleanup;
     }
 
-    // Map shared memory into EV's address space
-    system_state = (SystemState *)mmap(NULL, sizeof(SystemState), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    if (system_state == MAP_FAILED) {
-        perror("[EV] Error mapping shared memory");
-        exit(EXIT_FAILURE);
+    /* 2) Mapear em void*, depois converter via uintptr_t para obedecer Rule 11.5 (@turn1search1) */
+    shm_addr = (uintptr_t)mmap(NULL, EV_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    if ((void *)shm_addr == MAP_FAILED) {
+        perror("[EV] mmap falhou");
+        status = EXIT_FAILURE;
+        goto cleanup;
     }
-    close(shm_fd); // Close the file descriptor as the mapping is done
+    system_state = (SystemState *)shm_addr;
 
-    // Open the semaphore for synchronization (it should already be created by VMU)
-    sem = sem_open(SEMAPHORE_NAME, 0);
-    if (sem == SEM_FAILED) {
-        perror("[EV] Error opening semaphore");
-        exit(EXIT_FAILURE);
+    (void)close(shm_fd);
+
+    /* 3) Abrir semáforo POSIX (@turn0search1) */
+    tmp_sem = sem_open(SEMAPHORE_NAME, EV_SEM_FLAGS | O_CREAT, EV_SHM_PERMS, 1);
+    if (tmp_sem == SEM_FAILED) {
+        perror("[EV] sem_open falhou");
+        status = EXIT_FAILURE;
+        goto cleanup;
     }
+    sem = tmp_sem;
 
-    // Configuration of POSIX message queue for receiving commands for the EV module
-    struct mq_attr ev_mq_attributes;
-    ev_mq_attributes.mq_flags = 0;
-    ev_mq_attributes.mq_maxmsg = 10;
-    ev_mq_attributes.mq_msgsize = sizeof(EngineCommand);
-    ev_mq_attributes.mq_curmsgs = 0;
+    /* 4) Configurar atributos da fila de mensagens */
+    {
+        struct mq_attr ev_attr = {
+            .mq_flags   = 0,
+            .mq_maxmsg  = EV_MQ_MAXMSG,
+            .mq_msgsize = EV_MQ_MSGSIZE,
+            .mq_curmsgs = 0
+        };
 
-    ev_mq_receive = mq_open(EV_COMMAND_QUEUE_NAME, O_RDONLY | O_CREAT | O_NONBLOCK, 0666, &ev_mq_attributes);
-    if (ev_mq_receive == (mqd_t)-1) {
-        perror("[EV] Error creating/opening message queue");
-        munmap(system_state, sizeof(SystemState));
-        sem_close(sem);
-        exit(EXIT_FAILURE);
-    }
-
-    printf("EV Module Running\n");
-}
-
-void receive_cmd(){
-    // Receive commands from the VMU through the message queue
-    if (mq_receive(ev_mq_receive, (char *)&cmd, sizeof(cmd), NULL) != -1) {
-        sem_wait(sem); // Acquire the semaphore to protect shared memory
-        // Process the received command
-        switch (cmd.type) {
-            case CMD_START:
-                system_state->ev_on = true;
-                printf("[EV] Motor Elétrico Ligado\n");
-                break;
-            case CMD_STOP:
-                system_state->ev_on = false;
-                system_state->rpm_ev = 0; // Reset RPM when stopped
-                printf("[EV] Motor Elétrico Desligado\n");
-                break;
-            case CMD_SET_POWER:
-                // EV power is controlled by the inverse of the transition factor from VMU
-                system("clear");
-                printf("[EV] Received SET_POWER command (power level: %.2f)\n", cmd.power_level);
-                break;
-            case CMD_END:
-                running = 0; // Terminate the main loop
-                break;
-            default:
-                fprintf(stderr, "[EV] Comando desconhecido recebido\n");
-                break;
+        /* 5) Abrir fila de mensagens (@turn0search1) */
+        tmp_mq = mq_open(EV_COMMAND_QUEUE_NAME, EV_MQ_FLAGS, EV_MQ_PERMS, &ev_attr);
+        if (tmp_mq == (mqd_t)-1) {
+            perror("[EV] mq_open falhou");
+            status = EXIT_FAILURE;
+            goto cleanup;
         }
-        sem_post(sem); // Release the semaphore
+        ev_mq = tmp_mq;
     }
 
-
-    usleep(50000); // Small delay for the EV loop
+cleanup:
+    /* 6) Um único ponto de saída retorna status (@turn0search2) */
+    return status;
 }
 
-void engine(){
-    sem_wait(sem); // Acquire the semaphore for updating engine state
+
+EngineCommandEV ev_receive (EngineCommandEV cmd) {
+    // Receive commands from the VMU through the message queue
+    while (mq_receive(ev_mq, (char *)&cmd, sizeof(cmd), NULL) == -1) {
+
+    }
+
+    
+    return cmd;
+}
+
+void calculateValues () {
+
+    if (!accelerator && localVelocity != 0.0) {
+        BatteryEV += 1.0;
+    }
+
+    else if (evActive && localVelocity > 0.0) {
+        BatteryEV -= 0.01;
+    }
+
+    if (BatteryEV < 0.0) {
+        BatteryEV = 0.0;
+    } 
+
+    if (BatteryEV > 100.0) {
+        BatteryEV = 100.0;
+    }
+    lastLocalVelocity = localVelocity;
+
+    if (fuel > 0.0) {
+
+        rpmEV = evPercentage*((localVelocity * 16.67) / tireCircunferenceRatio);
+    }
+
+    else {
+        rpmEV = evPercentage*((localVelocity * 16.67) / tireCircunferenceRatio);
+        
+        if (rpmEV > 341.113716) {
+            rpmEV = 341.113716;
+        }
+    }
+    
+}
+
+void ev_treatValues () {
+
+    switch (cmd.type) {
+                    
+        case CMD_START:
+            if ( BatteryEV >= 10) {
+       
+                evActive = true;
+                strcpy(cmd.check, "ok");
+   
+            }
+
+            else {
+                cmd.evActive = false;
+                evActive = false;
+                strcpy(cmd.check, "no");
+            }
+            break;
+        
+        case CMD_STOP:
+            
+            break;
+
+        case CMD_END:
+            running = 0; // Terminate the main loop
+            break;
+        default:
+            
+            break;
+    }
+
+    localVelocity = cmd.globalVelocity;
+    evPercentage = cmd.power_level;
+    accelerator = cmd.accelerator;
+    fuel = cmd.iec_fuel;
+
+    if (evPercentage != 0) {
+        evActive = true;                
+    }
+    else {
+        evActive = false;            
+    }
+
     // Simulate EV engine behavior
-    if (system_state->ev_on) {
-        // Increase RPM based on the inverse of the transition factor received from VMU
-        system_state->rpm_ev = (int)((1.0 - system_state->transition_factor) * 8000);
+    if (evActive) {
         // Increase temperature based on the inverse of the transition factor
         system_state->temp_ev += (1.0 - system_state->transition_factor) * 0.05;
     } else {
-        system_state->rpm_ev = 0; // Set RPM to 0 when off
         // Cool down the engine if it's above the ambient temperature
         if (system_state->temp_ev > 25.0) {
             system_state->temp_ev -= 0.01;
         }
     }
-    sem_post(sem); // Release the semaphore
+
+    calculateValues();    
 }
 
-void cleanup() {
-    // Cleanup resources before exiting
-    mq_close(ev_mq_receive);
-    munmap(system_state, sizeof(SystemState));
-    sem_close(sem);
+void ev_cleanUp () {
+    
+    if (mq_close(ev_mq) == 0) {
+        ev_mq = (mqd_t)-1;
+    }
+    
+    if (munmap(system_state, sizeof(SystemState)) == 0 ){
+        system_state = NULL;
+    }
+    
+    if (sem_close(sem) == 0) {
+        sem = NULL;
+    }
 
-    printf("[EV] Shut down complete.\n");
 }

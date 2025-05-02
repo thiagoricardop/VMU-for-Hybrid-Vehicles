@@ -11,16 +11,40 @@
 #include <signal.h>
 #include <errno.h>
 #include <math.h>
+#include <string.h>
+
 #include "iec.h"
 #include "../vmu/vmu.h"
 
-// Global variables
-SystemState *system_state; // Pointer to the shared memory structure holding the system state
-sem_t *sem;                // Pointer to the semaphore for synchronizing access to shared memory
-mqd_t iec_mq_receive;     // Message queue descriptor for receiving commands for the IEC module
-volatile sig_atomic_t running = 1; // Flag to control the main loop, volatile to ensure visibility across threads
-volatile sig_atomic_t paused = 0;  // Flag to indicate if the simulation is paused
-EngineCommand cmd; // Structure to hold the received command
+
+// Ponteiros de recurso compartilhado
+SystemState *system_state = NULL;
+EngineCommandIEC cmd;
+sem_t *sem = NULL;
+mqd_t iec_mq = (mqd_t)-1;
+
+// Flags de controle de execução
+volatile sig_atomic_t running = 1;
+volatile sig_atomic_t paused  = 0;
+
+// Estados e parâmetros do motor de combustão (IEC)
+double fuel = 45.0;
+double iecPercentage = 0.0;
+double localVelocity = 0.0;
+bool iecActive = false;
+double iecRPM = 0.0;
+
+// Consumo médio e relações de marcha
+const double averageConsumeKMl = 14.7;
+const float gearRatio[5] = { 3.83f, 2.36f, 1.69f, 1.31f, 1.00f };
+double tireCircunferenceRatio = 2.19912;
+
+// Contadores e índices
+unsigned char gear = 0;
+unsigned char counter = 0;
+
+// Estado do motor elétrico
+bool ev_on = false;
 
 // Function to handle signals (SIGUSR1 for pause, SIGINT/SIGTERM for shutdown)
 void handle_signal(int sig) {
@@ -33,12 +57,7 @@ void handle_signal(int sig) {
     }
 }
 
-// Function to initialize communication with VMU
-void init_communication() {
-    // Configure signal handlers for graceful shutdown and pause
-    signal(SIGUSR1, handle_signal);
-    signal(SIGINT, handle_signal);
-    signal(SIGTERM, handle_signal);
+void iec_initializer() {
 
     // Configuration of shared memory for IEC
     int shm_fd = shm_open(SHARED_MEM_NAME, O_RDWR, 0666);
@@ -66,57 +85,107 @@ void init_communication() {
     struct mq_attr iec_mq_attributes;
     iec_mq_attributes.mq_flags = 0;
     iec_mq_attributes.mq_maxmsg = 10;
-    iec_mq_attributes.mq_msgsize = sizeof(EngineCommand);
+    iec_mq_attributes.mq_msgsize = sizeof(EngineCommandIEC);
     iec_mq_attributes.mq_curmsgs = 0;
 
-    iec_mq_receive = mq_open(IEC_COMMAND_QUEUE_NAME, O_RDONLY | O_CREAT | O_NONBLOCK, 0666, &iec_mq_attributes);
-    if (iec_mq_receive == (mqd_t)-1) {
+    iec_mq = mq_open(IEC_COMMAND_QUEUE_NAME, O_RDWR | O_CREAT | O_NONBLOCK, 0666, &iec_mq_attributes);
+    if (iec_mq == (mqd_t)-1) {
         perror("[IEC] Error creating/opening message queue");
         munmap(system_state, sizeof(SystemState));
         sem_close(sem);
         exit(EXIT_FAILURE);
     }
 
-    printf("IEC Module Running\n");
 }
 
-void receive_cmd() {
+EngineCommandIEC iec_receive (EngineCommandIEC cmd) {
     // Receive commands from the VMU through the message queue
-    if (mq_receive(iec_mq_receive, (char *)&cmd, sizeof(cmd), NULL) != -1) {
-        sem_wait(sem); // Acquire the semaphore to protect shared memory
-        // Process the received command
-        switch (cmd.type) {
-            case CMD_START:
-                system_state->iec_on = true;
-                printf("[IEC] Motor a Combustão Ligado\n");
-                break;
-            case CMD_STOP:
-                system_state->iec_on = false;
-                system_state->rpm_iec = 0; // Reset RPM when stopped
-                printf("[IEC] Motor a Combustão Desligado\n");
-                break;
-            case CMD_SET_POWER:
-                // IEC power is controlled by the transition factor from VMU
-                system("clear");
-                printf("[IEC] Received SET_POWER command (power level: %.2f)\n", cmd.power_level);
-                break;
-            case CMD_END:
-                running = 0; // Terminate the main loop
-                break;
-            default:
-                fprintf(stderr, "[IEC] Comando desconhecido recebido\n");
-                break;
-        }
-        sem_post(sem); // Release the semaphore
+    while (mq_receive(iec_mq, (char *)&cmd, sizeof(cmd), NULL) == -1) {
+
     }
+
+    return cmd;
 }
 
-void engine() {
-    sem_wait(sem); // Acquire the semaphore for updating engine state
+
+void calculateValues() {
+
+    if (localVelocity <= 15.0) {
+        gear = 1;
+    }
+    else if (localVelocity <= 30.0) {
+        gear = 2;
+    }
+    else if (localVelocity <= 40.0) {
+        gear = 3;
+    }
+    else if (localVelocity <= 70.0) {
+        gear = 4;
+    }
+    else {
+        gear = 5;
+    }
+    
+    if ( iecActive && fuel > 0.0) {
+        if (fuel > 0.0) {
+            fuel -= iecPercentage*(localVelocity/(averageConsumeKMl*36000.0));
+            if (fuel < 0.0) {
+                fuel == 0.0;
+            }    
+        }
+
+    }
+
+    else if (!iecActive) {
+        iecRPM = 0.0;
+    }
+
+    if (iecActive) {
+        iecRPM = ((localVelocity*16.67)/tireCircunferenceRatio)*(gearRatio[gear-1] * 3.55); 
+    }
+
+}
+
+void treatValues() {
+    
+    // Process the received command
+    switch (cmd.type) {
+        case CMD_START:
+
+            break;
+        case CMD_STOP:
+            system_state->iec_on = false;
+            system_state->rpm_iec = 0; // Reset RPM when stopped
+            break;
+
+        case CMD_END:
+            running = 0; // Terminate the main loop
+            break;
+        default:
+            
+            break;
+    }        
+
+
+    localVelocity = cmd.globalVelocity;
+    iecPercentage = cmd.power_level;
+    ev_on = cmd.ev_on;
+    
+    if (iecPercentage != 0.0) {
+        iecActive = true;                
+    }
+    else {
+        iecActive = false;            
+    }
+
+    calculateValues();
+    
+    system("clear");
+    printf("\nIEC usage percentage: %f", iecPercentage); 
+    printf("\nIEC RPM: %f", iecRPM);
+
     // Simulate IEC engine behavior
     if (system_state->iec_on) {
-        // Increase RPM based on the transition factor received from VMU
-        system_state->rpm_iec = (int)(system_state->transition_factor * 5000);
         // Increase temperature based on the transition factor
         system_state->temp_iec += system_state->transition_factor * 0.1;
     } else {
@@ -126,18 +195,19 @@ void engine() {
             system_state->temp_iec -= 0.02;
         }
     }
-    sem_post(sem); // Release the semaphore
 }
 
-// Function to handle the engine behavior based on the received command
+void iecCleanUp () {
+    
+    if (mq_close(iec_mq) == 0) {
+        iec_mq = (mqd_t) - 1;
+    }
+    
+    if (munmap(system_state, sizeof(SystemState)) == 0) {
+        system_state = NULL;
+    }
 
-// Function to cleanup resources before exiting
-void cleanup() {
-    // Cleanup resources before exiting
-    mq_close(iec_mq_receive);
-    munmap(system_state, sizeof(SystemState));
-    sem_close(sem);
-
-    printf("[IEC] Shut down complete.\n");
+    if (sem_close(sem) == 0) {
+        sem = NULL;
+    }
 }
-

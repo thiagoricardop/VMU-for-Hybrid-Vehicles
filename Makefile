@@ -1,75 +1,180 @@
-CC = gcc
-CFLAGS = -pthread -lrt -lm -fprofile-arcs -ftest-coverage -fcondition-coverage
-CFLAGS += -I. -I./vmu -I./ev -I./iec
-LDLIBS = -lcheck -pthread -lm -lsubunit
+# — Diretories —
+SRC_DIR      := src
+TEST_DIR     := test
+BINSRC       := bin
+BINTEST := $(BINSRC)/test
+COVERAGE_DIR := coverage
 
-SRC_DIR = ./src
-TEST_DIR = ./test
-BINDIR = bin
-COVERAGE_DIR = coverage
+# — Compiler and flags —
+CC           := gcc
 
-MODULES = vmu ev iec
-EXECS = $(addprefix $(BINDIR)/, $(MODULES))
-TESTS = $(addprefix $(BINDIR)/test_, $(MODULES))
+# Coverage flags: generate .gcno beside of .o and emit .gcda at bin diretory
+CFLAGS := -g -O0 -fprofile-arcs -ftest-coverage --coverage 
 
-TMUX_SESSION = meu_sistema
 
-.PHONY: all docker test coverage run show clean kill
+CFLAGS_TEST  := $(CFLAGS) -DTESTING 
+LDLIBS       := -lcheck -pthread -lm -lsubunit
 
-# Main target (compilation of executables)
+MODULES      := vmu ev iec
+EXECS        := $(addprefix $(BINSRC)/, $(MODULES))
+
+TMUX_SESSION := sistema
+
+# — Source files and objects for each module —
+VMU_SRCS := $(filter-out src/vmu/main.c,$(wildcard src/vmu/*.c))
+VMU_OBJS := $(patsubst src/vmu/%.c,$(BINSRC)/%.o,$(VMU_SRCS))
+VMU_MAIN := $(BINSRC)/main_vmu.o
+VMU_APP  := $(VMU_OBJS) $(VMU_MAIN)
+
+EV_SRCS := $(filter-out src/ev/main.c,$(wildcard src/ev/*.c))
+EV_OBJS := $(patsubst src/ev/%.c,$(BINSRC)/%.o,$(EV_SRCS))
+EV_MAIN := $(BINSRC)/main_ev.o
+EV_APP  := $(EV_OBJS) $(EV_MAIN)
+
+IEC_SRCS := $(filter-out src/iec/main.c,$(wildcard src/iec/*.c))
+IEC_OBJS := $(patsubst src/iec/%.c,$(BINSRC)/%.o,$(IEC_SRCS))
+IEC_MAIN := $(BINSRC)/main_iec.o
+IEC_APP  := $(IEC_OBJS) $(IEC_MAIN)
+
+TEST_SRCS := $(wildcard $(TEST_DIR)/vmu/test_vmu.c \
+                       $(TEST_DIR)/ev/test_ev.c \
+                       $(TEST_DIR)/iec/test_iec.c)
+
+# Test objects: bin/test_vmu.o, bin/test_ev.o, bin/test_iec.o
+TEST_OBJS := $(patsubst $(TEST_DIR)/%/test_%.c,$(BINSRC)/test_%.o,$(TEST_SRCS))
+
+TESTS := $(BINTEST)/test_vmu $(BINTEST)/test_ev $(BINTEST)/test_iec
+
+# — All Makefile commands —
+.PHONY: all test coverage run show clean kill
+.SECONDARY: $(BINSRC)/%.o
+
+# — Standard target: compile project —
 all: $(EXECS)
 
-# Create bin directory
-$(BINDIR):
+# — Create bin diretory if necessary —
+$(BINSRC):
 	mkdir -p $@
 
-# Pattern rule for main executables
-$(BINDIR)/%: $(SRC_DIR)/%/main.c | $(BINDIR)
-	$(CC) $(CFLAGS) $< -o $@ $(LDLIBS)
+$(BINTEST): | $(BINSRC)
+	mkdir -p $@
 
-# Testes individuais
-$(BINDIR)/test_ev: $(TEST_DIR)/ev/test_ev.c $(SRC_DIR)/ev/ev.c | $(BINDIR)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
+# — Compilation rules for each module —
+$(BINSRC)/%.o: src/vmu/%.c | $(BINSRC)
+	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BINDIR)/test_vmu: $(TEST_DIR)/vmu/test_vmu.c $(SRC_DIR)/vmu/vmu.c | $(BINDIR)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
+$(BINSRC)/%.o: src/ev/%.c | $(BINSRC)
+	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BINDIR)/test_iec: $(TEST_DIR)/iec/test_iec.c $(SRC_DIR)/iec/iec.c | $(BINDIR)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
+$(BINSRC)/%.o: src/iec/%.c | $(BINSRC)
+	$(CC) $(CFLAGS) -c $< -o $@
 
-# Docker build
-docker:
-	docker build -t vmu-dev .
-	
-# Compilação e execução dos testes
+# — Compile main of each module —
+$(BINSRC)/main_%.o: src/%/main.c | $(BINSRC)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# — Link executables —
+$(BINSRC)/vmu: $(VMU_APP)
+	$(CC) $^ -o $@ $(CFLAGS) $(LDLIBS)
+
+$(BINSRC)/ev: $(EV_APP)
+	$(CC) $^ -o $@ $(CFLAGS) $(LDLIBS)
+
+$(BINSRC)/iec: $(IEC_APP)
+	$(CC) $^ -o $@ $(CFLAGS) $(LDLIBS)
+
+# 1) Rules for each test object
+$(BINSRC)/test_vmu.o: $(TEST_DIR)/vmu/test_vmu.c | $(BINSRC)
+	$(CC) $(CFLAGS_TEST) -c $< -o $@
+
+$(BINSRC)/test_ev.o: $(TEST_DIR)/ev/test_ev.c | $(BINSRC)
+	$(CC) $(CFLAGS_TEST) -c $< -o $@
+
+$(BINSRC)/test_iec.o: $(TEST_DIR)/iec/test_iec.c | $(BINSRC)
+	$(CC) $(CFLAGS_TEST) -c $< -o $@
+
+# 2) Link: generate bin/test/test_vmu, bin/test/test_ev, bin/test/test_iec
+#    Use each test object + already compiled objects
+$(BINTEST)/test_vmu: $(BINSRC)/test_vmu.o $(VMU_OBJS) | $(BINTEST)
+	$(CC) $^ -o $@ $(CFLAGS_TEST) $(LDLIBS)
+
+$(BINTEST)/test_ev:  $(BINSRC)/test_ev.o  $(EV_OBJS) | $(BINTEST)
+	$(CC) $^ -o $@ $(CFLAGS_TEST) $(LDLIBS)
+
+$(BINTEST)/test_iec: $(BINSRC)/test_iec.o $(IEC_OBJS) | $(BINTEST)
+	$(CC) $^ -o $@ $(CFLAGS_TEST) $(LDLIBS)
+
+# — Run tests —
 test: $(TESTS)
-	@for test_exec in $(TESTS); do \
-		echo "Executando $$test_exec..."; \
-		$$test_exec; \
+	@echo ">>> Entrou no target test <<<"
+	@for t in $^; do \
+		echo "Executando $$t…"; \
+		./$$t; \
 	done
 
-# Coverage generation (report with LCOV + genhtml)
-coverage: test
-	lcov --capture --directory . --output-file coverage.info --branch-coverage --mcdc-coverage
-	genhtml coverage.info --output-directory $(COVERAGE_DIR) --branch-coverage --mcdc-coverage
-	
+LCOV_GCOV_TOOL := gcov-14
 
-# Running in tmux with split windows
+# — Coverage report —
+coverage: clean all test
+	# 1) Zera contadores
+	lcov --zerocounters --directory bin/ \
+	     --rc lcov_branch_coverage=1
+
+	# 2) Captura baseline estático (.gcno)
+	lcov --capture --initial \
+	     --gcov-tool gcov-14 \
+	     --directory bin/ \
+	     --output-file coverage_base.info \
+	     --rc lcov_branch_coverage=1
+
+	# 3) Executa testes (.gcda)
+	for t in bin/test/*; do ./$$t; done
+
+	# 4) Captura cobertura dinâmica (.gcda)
+	lcov --capture \
+	     --gcov-tool gcov-14 \
+	     --directory bin/ \
+	     --output-file coverage_test.info \
+	     --rc lcov_branch_coverage=1
+
+	# 5) Mescla baseline + teste
+	lcov -a coverage_base.info \
+	     -a coverage_test.info \
+	     -o coverage.info \
+	     --rc lcov_branch_coverage=1
+
+	# 6) Filtra arquivos irrelevantes
+	lcov --remove coverage.info '/usr/*' '*/test_*' \
+	     --output-file coverage_filtered.info \
+	     --rc lcov_branch_coverage=1
+
+	# 7) Gera relatório HTML com cobertura de ramos
+	genhtml coverage_filtered.info \
+	        --branch-coverage \
+	        --output-directory coverage_html \
+	        --rc genhtml_branch_coverage=1
+
+	@echo "Relatório disponível em coverage_html/index.html"
+
+# — Run aplication at tmux —
 run: all
-	@tmux new-session -d -s $(TMUX_SESSION) -n main './$(BINDIR)/vmu' || { echo "Failed to start tmux session"; exit 1; }
-	@tmux split-window -v -t $(TMUX_SESSION):0 './$(BINDIR)/ev' || { echo "Failed to split window for ev"; exit 1; }
-	@tmux split-window -h -t $(TMUX_SESSION):0.1 './$(BINDIR)/iec' || { echo "Failed to split window for iec"; exit 1; }
-	@tmux select-layout -t $(TMUX_SESSION):0 tiled
-	@tmux select-pane -t $(TMUX_SESSION):0.0
-	@tmux attach -t $(TMUX_SESSION) || echo "Failed to attach to tmux session"
+	@tmux new-session -d -s $(TMUX_SESSION) -n vmu './$(BINSRC)/vmu' \
+		&& tmux split-window -v './$(BINSRC)/ev' \
+		&& tmux split-window -h './$(BINSRC)/iec' \
+		&& tmux select-layout tiled \
+		&& tmux attach
 
+# — Open coverage report —
 show:
-	xdg-open $(COVERAGE_DIR)/index.html || echo "Failed to open coverage report"
+	xdg-open $(COVERAGE_DIR)/index.html || echo "Falha ao abrir o relatório de cobertura"
 
-# Clean up (remove binaries and reports)
+# — Clean executable objects —
 clean:
-	rm -rf $(BINDIR) $(COVERAGE_DIR) coverage.info
+	rm -rf $(BINSRC) $(BINTEST) $(COVERAGE_DIR) coverage.info
+	find . -name "*.gcda" -delete
+	find . -name "*.gcno" -delete
+	find . -name "*.o" -delete
 
-# Stop tmux
+# — End tmux session —
 kill:
-	@tmux kill-session -t $(TMUX_SESSION) || echo "No tmux session to kill"
+	@tmux kill-session -t $(TMUX_SESSION) || echo "Nenhuma sessão tmux para encerrar"

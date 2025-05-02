@@ -1,26 +1,63 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h> 
-#include "vmu.c"
+#include "vmu.h"
 
+
+struct timespec get_abs_timeout(int seconds) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += seconds;
+    return ts;
+}
+
+#ifndef TESTING
 int main() {
 
-    // Initialize communication with EV and IEC modules
-    init_communication();
+    struct timeval start, end;
+    unsigned char counterEV = 0;
+    unsigned char counterIEC = 0;
+
+    EngineCommandEV cmdEV;
+    EngineCommandIEC cmdIEC;
+
+    signal(SIGUSR1, handle_signal);
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+
+    strcpy(lastmsg, "");
+
+    vmu_initialization();
 
     system("clear");
+
     // Main loop of the VMU module
     while (running) {
         if (!paused) {
-            vmu_control_engines(); // Control the engines based on the system state
-            calculate_speed(system_state); // Calculate the current speed
+            
+            gettimeofday(&start, NULL);
+            
+            vmu_control_engines(); 
+            vmu_check_queue(counterEV, ev_mq, true);
+            vmu_check_queue(counterIEC, iec_mq, false);
             display_status(system_state);  // Display the current system status
-            usleep(200000); // Sleep for 200 milliseconds
+            calculate_speed(system_state);
+
+            gettimeofday(&end, NULL);
+
+            elapsed = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) / 1000;
+
+            if (elapsed < 100) {
+                delay_ms = 100 - elapsed;
+                // Converte delay_ms para microsegundos e faz o delay
+                usleep(delay_ms * 1000);
+            }
+            
         } else {
             sleep(1); // Sleep for 1 second if paused
         }
     }
 
-    cleanup(); // Cleanup resources before exiting
+    cleanUp();
+
+    printf("[VMU] Shut down complete.\n");
     return 0;
 }
+#endif

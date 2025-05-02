@@ -4,7 +4,9 @@
 #include <math.h>
 #include <errno.h>
 #include <stdio.h>
+
 #include "../../src/vmu/vmu.h"
+
 
 // Mocking shared memory and semaphore functions
 SystemState *mock_system_state;
@@ -35,6 +37,9 @@ void setup(void) {
             exit(EXIT_FAILURE);
         }
     }
+
+    transitionEV = false;
+    transitionIEC = false;
 
     system_state = mock_system_state;
     sem = mock_sem;
@@ -137,105 +142,115 @@ START_TEST(test_calculate_speed_braking)
 }
 END_TEST
 
-// Test case for vmu_control_engines (below transition zone, accelerating, sufficient battery)
-START_TEST(test_vmu_control_engines_below_transition_accelerating_battery)
+// Test case for vmu_control_engines (Speed below 45km/h , Battery above 10%, Eletric Only) 
+START_TEST(test_evonly_atevrange)
 {
-    mock_system_state->speed = TRANSITION_SPEED_THRESHOLD - (TRANSITION_ZONE_WIDTH / 2.0) - 1;
+    mock_system_state->speed = 18.0;
     mock_system_state->battery = 50.0;
-    mock_system_state->fuel = 50.0;
+    mock_system_state->fuel = 45.0;
     mock_system_state->accelerator = true;
     vmu_control_engines();
-    ck_assert_double_eq_tol(mock_system_state->transition_factor, 0.0, 1e-9);
-    ck_assert_int_eq(mock_system_state->ev_on, true);
-    ck_assert_int_eq(mock_system_state->iec_on, false);
     ck_assert_int_eq(mock_system_state->power_mode, 0); // Electric Only
+    ck_assert_double_eq_tol(mock_system_state->evPercentage, 1.0, 1e-9);
+    ck_assert_double_eq_tol(mock_system_state->iecPercentage, 0.0, 1e-9);
 }
 END_TEST
 
-// Test case for vmu_control_engines (above transition zone, accelerating, sufficient fuel)
-START_TEST(test_vmu_control_engines_above_transition_accelerating_fuel)
+// Test case for vmu_control_engines (Speed equal 0.0 , Battery under 10%, Combustion Only)
+START_TEST(test_ieconly_atevrange)
 {
-    mock_system_state->speed = TRANSITION_SPEED_THRESHOLD + (TRANSITION_ZONE_WIDTH / 2.0) + 1;
-    mock_system_state->battery = 50.0;
-    mock_system_state->fuel = 50.0;
+    mock_system_state->speed = 0.0;
+    mock_system_state->battery = 9.0;
+    mock_system_state->fuel = 45.0;
     mock_system_state->accelerator = true;
     vmu_control_engines();
-    ck_assert_double_eq_tol(mock_system_state->transition_factor, 1.0, 1e-9);
-    ck_assert_int_eq(mock_system_state->ev_on, false);
-    ck_assert_int_eq(mock_system_state->iec_on, true);
     ck_assert_int_eq(mock_system_state->power_mode, 2); // Combustion Only
+    ck_assert_double_eq_tol(mock_system_state->evPercentage, 0.0, 1e-9);
+    ck_assert_double_eq_tol(mock_system_state->iecPercentage, 1.0, 1e-9);
 }
 END_TEST
 
-// Test case for vmu_control_engines (in transition zone, accelerating, sufficient battery and fuel)
-START_TEST(test_vmu_control_engines_in_transition_accelerating_both)
+// Test case for vmu_control_engines (Fuel empty, verify if transition EV is activated)
+START_TEST(test_evtransitionactivated_nofuel)
 {
-    mock_system_state->speed = TRANSITION_SPEED_THRESHOLD;
+    mock_system_state->speed = 98.0;
     mock_system_state->battery = 50.0;
-    mock_system_state->fuel = 50.0;
+    mock_system_state->fuel = 0.0;
     mock_system_state->accelerator = true;
+    transitionEV = false;
     vmu_control_engines();
-    ck_assert_double_ge(mock_system_state->transition_factor, 0.0);
-    ck_assert_double_le(mock_system_state->transition_factor, 1.0);
-    ck_assert_int_eq(mock_system_state->ev_on, true);
-    ck_assert_int_eq(mock_system_state->iec_on, true);
-    ck_assert_int_eq(mock_system_state->power_mode, 1); // Hybrid
+    ck_assert_int_eq(mock_system_state->accelerator, false);
+    ck_assert_int_eq(transitionEV, true);
 }
 END_TEST
 
 // Test case for vmu_control_engines (emergency: low battery, below threshold, sufficient fuel)
-START_TEST(test_vmu_control_engines_emergency_low_battery)
+START_TEST(test_evtransitionsActivated_batteryfull)
 {
-    mock_system_state->speed = TRANSITION_SPEED_THRESHOLD - 1;
-    mock_system_state->battery = 5.0;
-    mock_system_state->fuel = 50.0;
+    mock_system_state->evPercentage = 0.57;
+    mock_system_state->iecPercentage = 0.43;
+    mock_system_state->speed = 98.0;
+    mock_system_state->battery = 100.0;
+    mock_system_state->fuel = 44.0;
     mock_system_state->accelerator = true;
+    transitionEV = false;
+    transitionIEC = true;
     vmu_control_engines();
-    ck_assert_double_eq_tol(mock_system_state->transition_factor, 1.0, 1e-9);
-    ck_assert_int_eq(mock_system_state->ev_on, false);
-    ck_assert_int_eq(mock_system_state->iec_on, true);
-    ck_assert_int_eq(mock_system_state->power_mode, 2); // Combustion Only
+    ck_assert_int_eq(transitionIEC, false);
+    ck_assert_int_eq(transitionEV, true);
+    ck_assert_int_eq(mock_system_state->power_mode, 1); // Hybrid
 }
 END_TEST
 
 // Test case for vmu_control_engines (emergency: low fuel, above threshold, sufficient battery)
-START_TEST(test_vmu_control_engines_emergency_low_fuel)
+START_TEST(test_iectransitionsActivated_batteryunderten)
 {
-    mock_system_state->speed = TRANSITION_SPEED_THRESHOLD + 1;
-    mock_system_state->battery = 50.0;
-    mock_system_state->fuel = 3.0;
+    mock_system_state->evPercentage = 0.57;
+    mock_system_state->iecPercentage = 0.43;
+    mock_system_state->speed = 98.0;
+    mock_system_state->battery = 8.0;
+    mock_system_state->fuel = 44.0;
     mock_system_state->accelerator = true;
     vmu_control_engines();
-    ck_assert_double_eq_tol(mock_system_state->transition_factor, 0.0, 1e-9);
-    ck_assert_int_eq(mock_system_state->ev_on, true);
-    ck_assert_int_eq(mock_system_state->iec_on, false);
-    ck_assert_int_eq(mock_system_state->power_mode, 0); // Electric Only
+    ck_assert_int_eq(transitionIEC, true);
+    ck_assert_int_eq(transitionEV, false);
 }
 END_TEST
 
 // Test case for vmu_control_engines (both battery and fuel low)
-START_TEST(test_vmu_control_engines_both_low)
+START_TEST(test_transitionFromIecToStandard)
 {
-    mock_system_state->speed = 30.0;
-    mock_system_state->battery = 5.0;
-    mock_system_state->fuel = 3.0;
-    mock_system_state->accelerator = true;
+    mock_system_state->evPercentage = 0.497;
+    mock_system_state->iecPercentage = 0.503;
+    transitionEV = true;
+    mock_system_state->speed = 90.0;
+    mock_system_state->battery = 98.0;
+    mock_system_state->fuel = 44.0;
     vmu_control_engines();
-    ck_assert_double_eq_tol(mock_system_state->transition_factor, 0.0, 1e-9);
-    ck_assert_int_eq(mock_system_state->ev_on, false);
-    ck_assert_int_eq(mock_system_state->iec_on, false);
-    ck_assert_int_eq(mock_system_state->power_mode, 4); // Parked
+    ck_assert_int_eq(transitionIEC, false);
+    ck_assert_int_eq(transitionEV, false);
+    ck_assert_int_eq(mock_system_state->power_mode, 1); // Hybrid
+    ck_assert_double_eq_tol(mock_system_state->evPercentage, 0.5, 1e-9);
+    ck_assert_double_eq_tol(mock_system_state->iecPercentage, 0.5, 1e-9);
 }
 END_TEST
 
 // Test case for vmu_control_engines (not accelerating)
-START_TEST(test_vmu_control_engines_not_accelerating)
+START_TEST(test_transitionFromHybridToEv)
 {
-    mock_system_state->accelerator = false;
+    mock_system_state->evPercentage = 0.99;
+    mock_system_state->iecPercentage = 0.01;
+    transitionEV = true;
+    mock_system_state->speed = 44.0;
+    mock_system_state->battery = 88.0;
+    mock_system_state->fuel = 0.0;
+    mock_system_state->accelerator = true;    
     vmu_control_engines();
-    ck_assert_int_eq(mock_system_state->ev_on, false);
-    ck_assert_int_eq(mock_system_state->iec_on, false);
-    ck_assert_int_eq(mock_system_state->power_mode, 4); // Parked
+    ck_assert_int_eq(transitionIEC, false);
+    ck_assert_int_eq(transitionEV, false);
+    ck_assert_int_eq(mock_system_state->power_mode, 0); // Hybrid
+    ck_assert_double_eq_tol(mock_system_state->evPercentage, 1.0, 1e-9);
+    ck_assert_double_eq_tol(mock_system_state->iecPercentage, 0.0, 1e-9);
 }
 END_TEST
 
@@ -253,13 +268,13 @@ Suite *vmu_suite(void) {
     tcase_add_test(tc_core, test_calculate_speed_accelerating);
     tcase_add_test(tc_core, test_calculate_speed_coasting);
     tcase_add_test(tc_core, test_calculate_speed_braking);
-    tcase_add_test(tc_core, test_vmu_control_engines_below_transition_accelerating_battery);
-    tcase_add_test(tc_core, test_vmu_control_engines_above_transition_accelerating_fuel);
-    tcase_add_test(tc_core, test_vmu_control_engines_in_transition_accelerating_both);
-    tcase_add_test(tc_core, test_vmu_control_engines_emergency_low_battery);
-    tcase_add_test(tc_core, test_vmu_control_engines_emergency_low_fuel);
-    tcase_add_test(tc_core, test_vmu_control_engines_both_low);
-    tcase_add_test(tc_core, test_vmu_control_engines_not_accelerating);
+    tcase_add_test(tc_core, test_evonly_atevrange);
+    tcase_add_test(tc_core, test_ieconly_atevrange);
+    tcase_add_test(tc_core, test_evtransitionactivated_nofuel);
+    tcase_add_test(tc_core, test_evtransitionsActivated_batteryfull);
+    tcase_add_test(tc_core, test_iectransitionsActivated_batteryunderten);
+    tcase_add_test(tc_core, test_transitionFromIecToStandard);
+    tcase_add_test(tc_core, test_transitionFromHybridToEv);
     suite_add_tcase(s, tc_core);
 
     return s;

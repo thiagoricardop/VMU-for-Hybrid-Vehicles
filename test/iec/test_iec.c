@@ -15,13 +15,6 @@
 #include "../../src/iec/iec.h"
 #include "../../src/vmu/vmu.h"
 
-// Global variables declared in the IEC module that we need to override for testing.
-extern SystemState *system_state;
-extern sem_t *sem;
-extern mqd_t iec_mq_receive;   // Message queue descriptor for IEC commands
-extern volatile sig_atomic_t running;
-extern EngineCommand cmd;      // Global command structure
-
 // ------------------------------------------------------------------------
 // Test Overrides
 // ------------------------------------------------------------------------
@@ -29,14 +22,14 @@ extern EngineCommand cmd;      // Global command structure
 // For testing, we simulate the behavior of mq_receive by overriding it.
 // A flag and a fake command will control the behavior.
 int fake_mq_receive_enabled = 0;
-EngineCommand fake_cmd;
+EngineCommandIEC fake_cmd;
 
 // Override of mq_receive: when fake_mq_receive_enabled is set,
 // copy fake_cmd into msg_ptr and return its size.
 ssize_t mq_receive(mqd_t mqdes, char *msg_ptr, size_t msg_len, unsigned int *msg_prio) {
     if (fake_mq_receive_enabled) {
-        memcpy(msg_ptr, &fake_cmd, sizeof(EngineCommand));
-        return sizeof(EngineCommand);
+        memcpy(msg_ptr, &fake_cmd, sizeof(EngineCommandIEC));
+        return sizeof(EngineCommandIEC);
     }
     return -1; // Simulate no message received.
 }
@@ -111,7 +104,7 @@ void init_comm_teardown(void) {
     }
     sem_close(sem);
     sem_unlink(SEMAPHORE_NAME);
-    mq_close(iec_mq_receive);
+    mq_close(iec_mq);
     mq_unlink(IEC_COMMAND_QUEUE_NAME);
     shm_unlink(SHARED_MEM_NAME);
 }
@@ -173,10 +166,10 @@ void cleanup_setup(void) {
     struct mq_attr attr;
     attr.mq_flags = 0;
     attr.mq_maxmsg = 10;
-    attr.mq_msgsize = sizeof(EngineCommand);
+    attr.mq_msgsize = sizeof(EngineCommandIEC);
     attr.mq_curmsgs = 0;
-    iec_mq_receive = mq_open(IEC_COMMAND_QUEUE_NAME, O_CREAT | O_RDONLY | O_NONBLOCK, 0666, &attr);
-    if (iec_mq_receive == (mqd_t)-1) {
+    iec_mq = mq_open(IEC_COMMAND_QUEUE_NAME, O_CREAT | O_RDONLY | O_NONBLOCK, 0666, &attr);
+    if (iec_mq == (mqd_t)-1) {
         perror("mq_open in cleanup_setup");
         exit(EXIT_FAILURE);
     }
@@ -194,11 +187,11 @@ void cleanup_teardown(void) {
 
 // Test init_communication(): verifies that shared memory, semaphore, and message queue are set up.
 START_TEST(test_init_communication_success) {
-    init_communication();
+    iec_initializer() ;
     ck_assert_ptr_nonnull(system_state);
     ck_assert_ptr_ne(system_state, MAP_FAILED);
     ck_assert_ptr_nonnull(sem);
-    ck_assert_int_ne(iec_mq_receive, (mqd_t)-1);
+    ck_assert_int_ne(iec_mq, (mqd_t)-1);
 }
 END_TEST
 
@@ -206,9 +199,11 @@ END_TEST
 START_TEST(test_receive_cmd_start) {
     fake_mq_receive_enabled = 1;
     fake_cmd.type = CMD_START;
-    system_state->iec_on = false;  // Ensure initial state
-    receive_cmd();
-    ck_assert(system_state->iec_on == true);
+    fake_cmd.power_level = 0.205000; // iec is activated when power level is above than 0.0
+    iecActive = false;  // Ensure initial state
+    cmd = iec_receive (fake_cmd);
+    treatValues();
+    ck_assert(iecActive == true);
     fake_mq_receive_enabled = 0;
 }
 END_TEST
@@ -217,11 +212,10 @@ END_TEST
 START_TEST(test_receive_cmd_stop) {
     fake_mq_receive_enabled = 1;
     fake_cmd.type = CMD_STOP;
-    system_state->iec_on = true;
-    system_state->rpm_iec = 3000;
-    receive_cmd();
-    ck_assert(system_state->iec_on == false);
-    ck_assert_int_eq(system_state->rpm_iec, 0);
+    iecActive = true;
+    cmd = iec_receive (fake_cmd);
+    treatValues();
+    ck_assert(iecActive == false);
     fake_mq_receive_enabled = 0;
 }
 END_TEST
@@ -235,7 +229,7 @@ START_TEST(test_receive_cmd_set_power) {
     bool initial_on = system_state->iec_on;
     int initial_rpm = system_state->rpm_iec;
     float initial_temp = system_state->temp_iec;
-    receive_cmd();
+    fake_cmd = iec_receive (fake_cmd);
     ck_assert(system_state->iec_on == initial_on);
     ck_assert_int_eq(system_state->rpm_iec, initial_rpm);
     ck_assert(system_state->temp_iec == initial_temp);
@@ -248,37 +242,27 @@ START_TEST(test_receive_cmd_end) {
     fake_mq_receive_enabled = 1;
     fake_cmd.type = CMD_END;
     running = 1;
-    receive_cmd();
+    cmd = iec_receive (fake_cmd);
+    treatValues();
     ck_assert_int_eq(running, 0);
-    fake_mq_receive_enabled = 0;
-}
-END_TEST
-
-// Test receive_cmd() with an unknown command: state remains unchanged.
-START_TEST(test_receive_cmd_unknown) {
-    fake_mq_receive_enabled = 1;
-    fake_cmd.type = 999; // Unknown command type.
-    bool initial_on = system_state->iec_on;
-    int initial_rpm = system_state->rpm_iec;
-    float initial_temp = system_state->temp_iec;
-    int initial_running = running;
-    receive_cmd();
-    ck_assert(system_state->iec_on == initial_on);
-    ck_assert_int_eq(system_state->rpm_iec, initial_rpm);
-    ck_assert(system_state->temp_iec == initial_temp);
-    ck_assert_int_eq(running, initial_running);
     fake_mq_receive_enabled = 0;
 }
 END_TEST
 
 // Test engine() when IEC is on: RPM and temperature should be updated.
 START_TEST(test_engine_on) {
-    system_state->iec_on = true;
-    system_state->transition_factor = 0.8; // Example transition factor.
-    system_state->temp_iec = 25.0;
-    engine();
-    ck_assert_int_eq(system_state->rpm_iec, (int)(0.8 * 5000));
-    ck_assert_double_eq(system_state->temp_iec, 25.0 + (0.8 * 0.1));
+    fake_mq_receive_enabled = 1;
+    iecActive = true;
+    fake_cmd.type = CMD_START;
+    fake_cmd.globalVelocity = 90.0;
+    fake_cmd.power_level = 0.50;
+    fake_cmd.ev_on = true;
+    cmd = iec_receive(fake_cmd);
+    treatValues();
+    double expected = 2421.907399;
+    double tol = 1e-6;  
+    ck_assert_double_eq_tol(iecRPM, expected, tol);
+    fake_mq_receive_enabled = 0;
 }
 END_TEST
 
@@ -286,7 +270,7 @@ END_TEST
 START_TEST(test_engine_off_cooling) {
     system_state->iec_on = false;
     system_state->temp_iec = 30.0;
-    engine();
+    treatValues();
     ck_assert_int_eq(system_state->rpm_iec, 0);
     ck_assert_double_eq(system_state->temp_iec, 30.0 - 0.02);
 }
@@ -296,7 +280,7 @@ END_TEST
 START_TEST(test_engine_off_no_cooling) {
     system_state->iec_on = false;
     system_state->temp_iec = 25.0;
-    engine();
+    treatValues();
     ck_assert_int_eq(system_state->rpm_iec, 0);
     ck_assert_double_eq(system_state->temp_iec, 25.0);
 }
@@ -304,32 +288,12 @@ END_TEST
 
 // Test cleanup(): verifies that resources are released and the shutdown message is printed.
 START_TEST(test_cleanup) {
-    // Redirect stdout to capture cleanup() output.
-    fflush(stdout);
-    int stdout_backup = dup(fileno(stdout));
-    FILE *temp_file = tmpfile();
-    if (!temp_file) {
-        perror("tmpfile");
-        exit(EXIT_FAILURE);
-    }
-    dup2(fileno(temp_file), fileno(stdout));
 
-    // Call cleanup().
-    cleanup();
+    iecCleanUp();
 
-    fflush(stdout);
-    // Restore stdout.
-    dup2(stdout_backup, fileno(stdout));
-    close(stdout_backup);
-
-    // Read the captured output.
-    rewind(temp_file);
-    char buffer[256];
-    fgets(buffer, sizeof(buffer), temp_file);
-    fclose(temp_file);
-
-    ck_assert_msg(strstr(buffer, "[IEC] Shut down complete.") != NULL,
-                  "Cleanup did not print the expected shutdown message");
+    ck_assert_int_eq(iec_mq, (mqd_t)-1);
+    ck_assert_ptr_eq(system_state, NULL);     /* ck_assert_ptr_eq para ponteiros */ 
+    ck_assert_ptr_eq(sem, NULL);              /* idem */     
 }
 END_TEST
 
@@ -356,7 +320,6 @@ Suite* iec_tests_suite(void) {
     tcase_add_test(tc_receive_cmd, test_receive_cmd_stop);
     tcase_add_test(tc_receive_cmd, test_receive_cmd_set_power);
     tcase_add_test(tc_receive_cmd, test_receive_cmd_end);
-    tcase_add_test(tc_receive_cmd, test_receive_cmd_unknown);
     suite_add_tcase(s, tc_receive_cmd);
 
     // TCase for engine() tests.
