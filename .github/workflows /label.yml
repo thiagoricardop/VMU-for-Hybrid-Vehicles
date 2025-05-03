@@ -1,0 +1,60 @@
+
+name: Label issues
+on:
+  issues:
+    types:
+      - reopened
+      - opened
+jobs:
+  label_issues:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Define Labels
+        run: |
+          ISSUE_DATA=$(gh issue view "$NUMBER" --json body,title -q '.body + " " + .title' | tr '[:upper:]' '[:lower:]')
+          LABELS="" # Start with empty labels
+          MAPPING=(
+            "bug:bug"
+            "documentation:documentation"
+            "duplicate:duplicate"
+            "enhancement:enhancement"
+            "feature:feature"
+            "good first issue:good first issue"
+            "help wanted:help wanted"
+            "invalid:invalid"
+            "question:question"
+            "triage:triage"
+            "wontfix:wontfix"
+          )
+          LABEL_FOUND=false # Flag to track if any label was found
+          for MAP in "${MAPPING[@]}"; do
+            KEYWORD=$(echo "$MAP" | cut -d':' -f1)
+            LABEL=$(echo "$MAP" | cut -d':' -f2)
+            if [[ "$ISSUE_DATA" =~ $KEYWORD ]]; then
+              LABELS="$LABELS,$LABEL"
+              LABEL_FOUND=true # Set flag to true if a label is added
+            fi
+          done
+          # Remove leading comma if any
+          LABELS=$(echo "$LABELS" | sed 's/^,//')
+          # Add "triage" if no other labels were found
+          if [[ "$LABEL_FOUND" == false ]]; then
+            LABELS="triage"
+          fi
+          # Remove duplicates and trailing comma
+          LABELS=$(echo "$LABELS" | tr ',' '\n' | sort -u | tr '\n' ',')
+          LABELS=$(echo "$LABELS" | sed 's/,$//')
+          echo "LABELS=$LABELS" >> $GITHUB_ENV
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+
+      - name: Add Labels to Issue
+        run: gh issue edit "$NUMBER" --add-label "$LABELS"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
