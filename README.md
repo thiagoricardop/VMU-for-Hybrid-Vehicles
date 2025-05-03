@@ -1,3 +1,5 @@
+[![Cppcheck](https://github.com/thiagoricardop/VMU-for-Hybrid-Vehicles/actions/workflows/static_analysis.yml/badge.svg)](https://github.com/thiagoricardop/VMU-for-Hybrid-Vehicles/actions/workflows/static_analysis.yml)
+[![Coverage](https://github.com/thiagoricardop/VMU-for-Hybrid-Vehicles/actions/workflows/tests_automation.yml/badge.svg)](https://github.com/thiagoricardop/VMU-for-Hybrid-Vehicles/actions/workflows/tests_automation.yml)
 # Hybrid Vehicle Simulation
 
 This project simulates a hybrid vehicle with three main modules:
