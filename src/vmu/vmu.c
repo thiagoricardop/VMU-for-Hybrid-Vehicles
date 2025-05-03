@@ -376,14 +376,7 @@ void vmu_control_engines() {
                   calculated_iec_power_level = fmin(calculated_iec_power_level + POWER_INCREASE_RATE, target_iec_power);
              }
              desired_iec_on = true; // Ensure IEC is on for charging
-        } else if (keep_iec_for_charge) {
-             // If general charging conditions met (not the emergency low battery case)
-             target_iec_power = 0.1; // Use a minimum power for charging when coasting/idle
-              if (calculated_iec_power_level < target_iec_power) {
-                  calculated_iec_power_level = fmin(calculated_iec_power_level + POWER_INCREASE_RATE, target_iec_power);
-             }
-             desired_iec_on = true;
-        }
+        } 
 
 
         // Regenerative braking logic determines power mode, but doesn't necessarily keep EV motor 'on' for propulsion
@@ -450,20 +443,7 @@ void vmu_control_engines() {
     // Only send SET_POWER if the engine is actually reported as ON.
     if (current_ev_on) {
          ev_cmd.type = CMD_SET_POWER; // Overwrite START/STOP if already set (prioritize START/STOP for state change)
-         // A better approach is to check if a START/STOP command was already prepared.
-         if (ev_cmd.type == 0) { // If no START or STOP command was prepared for EV
-             ev_cmd.type = CMD_SET_POWER;
-             ev_cmd.power_level = calculated_ev_power_level;
-             send_ev_cmd = true;
-         } else if (ev_cmd.type == CMD_STOP) {
-              // If we just sent a STOP command, sending SET_POWER might be redundant or incorrect.
-              // Assume STOP command is sufficient to initiate shutdown. Do not send SET_POWER.
-         } else if (ev_cmd.type == CMD_START) {
-              // If we just sent a START command, sending SET_POWER immediately might be necessary
-              // depending on the module's implementation. Assuming for now that SET_POWER
-              // should follow START once the module is ready (i.e., in the next cycle when current_ev_on becomes true).
-              // So, only send SET_POWER if CMD_START was NOT sent in this cycle.
-         }
+         
     }
 
     // Refined EV Command Logic: Prioritize state changes (START/STOP), then send power levels if engine is ON.

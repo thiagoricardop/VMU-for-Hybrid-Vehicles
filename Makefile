@@ -69,7 +69,7 @@ show:
 
 # Clean up (remove binaries and reports)
 clean:
-	rm -rf $(BINDIR) $(COVERAGE_DIR) coverage.info
+	rm -rf $(BINDIR) $(COVERAGE_DIR) coverage.info coverage_filter.info
 
 # Stop tmux
 kill:
