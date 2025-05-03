@@ -17,7 +17,7 @@ int main() {
             receive_cmd(); // Receive commands from the VMU
             engine(); // Call the engine function to update the engine state
             // Simulate EV engine behavior
-
+            usleep(70000); // Small delay for the IEC loop
         } else {
             sleep(1); // Sleep for 1 second if paused
         }
