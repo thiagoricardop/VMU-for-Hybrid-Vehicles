@@ -21,6 +21,7 @@ mqd_t ev_mq_receive;       // Message queue descriptor for receiving commands fo
 volatile sig_atomic_t running = 1; // Flag to control the main loop, volatile to ensure visibility across threads
 volatile sig_atomic_t paused = 0;  // Flag to indicate if the simulation is paused
 EngineCommand cmd; // Structure to hold the received command
+int shm_fd = -1;
 
 // Function to handle signals (SIGUSR1 for pause, SIGINT/SIGTERM for shutdown)
 void handle_signal(int sig) {
@@ -33,17 +34,17 @@ void handle_signal(int sig) {
     }
 }
 
-void init_communication() {
+int init_communication_ev(char * shared_mem_name, char * semaphore_name, char * iec_queue_name) {
     // Configure signal handlers for graceful shutdown and pause
     signal(SIGUSR1, handle_signal);
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
     // Configuration of shared memory for EV (Open read-write to update state)
-    int shm_fd = shm_open(SHARED_MEM_NAME, O_RDWR, 0666);
+    shm_fd = shm_open(SHARED_MEM_NAME, O_RDWR, 0666);
     if (shm_fd == -1) {
         perror("[EV] Error opening shared memory");
-        exit(EXIT_FAILURE);
+        return 0;
     }
 
     // Map shared memory into EV's address space
@@ -51,7 +52,7 @@ void init_communication() {
     if (system_state == MAP_FAILED) {
         perror("[EV] Error mapping shared memory");
         close(shm_fd); // Close file descriptor before exiting
-        exit(EXIT_FAILURE);
+        return 0;
     }
     close(shm_fd); // Close the file descriptor as the mapping is done
 
@@ -61,7 +62,7 @@ void init_communication() {
         perror("[EV] Error opening semaphore");
         // Clean up shared memory before exiting
         munmap(system_state, sizeof(SystemState));
-        exit(EXIT_FAILURE); // Exit, VMU will handle unlinking
+        return 0; // Exit, VMU will handle unlinking
     }
 
     // Configuration of POSIX message queue for receiving commands for the EV module
@@ -79,10 +80,11 @@ void init_communication() {
         munmap(system_state, sizeof(SystemState));
         sem_close(sem);
         // No need to unlink semaphore or shm here, VMU does that
-        exit(EXIT_FAILURE);
+        return 0;
     }
 
     printf("EV Module Running\n");
+    return 1;
 }
 
 void receive_cmd(){
@@ -164,10 +166,7 @@ void engine() {
         int target_rpm = (int)(ev_power_level * MAX_EV_RPM);
         
         // Smoothly transition RPM (using local variables)
-        if (rpm_ev< target_rpm) {
-            new_rpm += (int)(MAX_EV_RPM * POWER_INCREASE_RATE);
-            if (new_rpm > target_rpm) new_rpm = target_rpm;
-        } else if (rpm_ev > target_rpm) {
+        if (rpm_ev > target_rpm) {
             new_rpm -= (int)(MAX_EV_RPM * POWER_DECREASE_RATE * 0.5);
             if (new_rpm < target_rpm) new_rpm = target_rpm;
         }

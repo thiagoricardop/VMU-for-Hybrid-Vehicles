@@ -51,7 +51,8 @@ test: $(TESTS)
 # Coverage generation (report with LCOV + genhtml)
 coverage: test
 	lcov --capture --directory . --output-file coverage.info --branch-coverage --mcdc-coverage
-	genhtml coverage.info --output-directory $(COVERAGE_DIR) --branch-coverage --mcdc-coverage
+	lcov --remove coverage.info '/test/*' -o coverage_filter.info --branch-coverage --mcdc-coverage
+	genhtml coverage_filter.info --output-directory $(COVERAGE_DIR) --branch-coverage --mcdc-coverage
 	
 
 # Running in tmux with split windows
@@ -68,7 +69,7 @@ show:
 
 # Clean up (remove binaries and reports)
 clean:
-	rm -rf $(BINDIR) $(COVERAGE_DIR) coverage.info
+	rm -rf $(BINDIR) $(COVERAGE_DIR) coverage.info coverage_filter.info
 
 # Stop tmux
 kill:

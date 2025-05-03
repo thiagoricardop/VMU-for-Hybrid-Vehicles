@@ -503,6 +503,19 @@ START_TEST(test_vmu_handle_signal_shutdown)
 }
 END_TEST
 
+START_TEST(test_vmu_handle_signal_unknown)
+{
+    // Test handling of an unrecognized signal
+    running = 1;
+    paused = false;
+    handle_signal(SIGHUP); // Send a signal type that isn't explicitly handled
+    
+    // Verify state remains unchanged
+    ck_assert_msg(running == 1, "Running flag should remain 1 for unknown signals");
+    ck_assert_msg(paused == false, "Paused flag should remain false for unknown signals");
+}
+END_TEST
+
 
 // --- Tests for vmu_control_engines (State Logic Only) ---
 
@@ -663,6 +676,388 @@ START_TEST(test_vmu_control_engines_state_coasting_iec_charge)
     sem_post(sem);
 
     // Skip MQ checks
+}
+END_TEST
+
+START_TEST(test_vmu_calculate_speed_exact_at_min_speed)
+{
+    // Test calculate_speed at exactly MIN_SPEED with different acceleration/brake combinations
+    sem_wait(sem);
+    system_state->speed = MIN_SPEED;
+    system_state->accelerator = false;
+    system_state->brake = false; // Coasting
+    system_state->ev_on = false;
+    system_state->iec_on = false;
+    sem_post(sem);
+
+    calculate_speed(system_state);
+
+    sem_wait(sem);
+    ck_assert_msg(system_state->speed == MIN_SPEED, "Speed should remain at MIN_SPEED when coasting at MIN_SPEED");
+    sem_post(sem);
+}
+END_TEST
+
+START_TEST(test_vmu_calculate_speed_near_max_speed)
+{
+    // Test calculate_speed near MAX_SPEED
+    sem_wait(sem);
+    system_state->speed = MAX_SPEED - 1.0;
+    system_state->accelerator = true;
+    system_state->brake = false;
+    system_state->ev_on = true;
+    system_state->iec_on = true;
+    system_state->ev_power_level = 1.0;
+    system_state->iec_power_level = 1.0;
+    sem_post(sem);
+
+    calculate_speed(system_state);
+
+    sem_wait(sem);
+    ck_assert_msg(system_state->speed > (MAX_SPEED - 1.0), "Speed should increase when accelerating near MAX_SPEED");
+    ck_assert_msg(system_state->speed <= MAX_SPEED, "Speed should not exceed MAX_SPEED");
+    sem_post(sem);
+}
+END_TEST
+
+START_TEST(test_vmu_calculate_speed_engine_braking_effect)
+{
+    // Test speed calculation with engine braking effects from both engines
+    sem_wait(sem);
+    system_state->speed = 50.0;
+    system_state->accelerator = false;
+    system_state->brake = false; // Coasting
+    system_state->ev_on = true;  // EV engine on for engine braking
+    system_state->iec_on = true; // IEC engine on for engine braking
+    system_state->ev_power_level = 0.0;
+    system_state->iec_power_level = 0.0;
+    sem_post(sem);
+
+    double initial_speed;
+    sem_wait(sem);
+    initial_speed = system_state->speed;
+    sem_post(sem);
+    
+    calculate_speed(system_state);
+    
+    sem_wait(sem);
+    double speed_after_tick = system_state->speed;
+    sem_post(sem);
+    
+    // Run the same test with engines off for comparison
+    sem_wait(sem);
+    system_state->speed = 50.0; // Reset speed
+    system_state->ev_on = false;
+    system_state->iec_on = false;
+    sem_post(sem);
+    
+    calculate_speed(system_state);
+    
+    sem_wait(sem);
+    double speed_after_tick_no_engines = system_state->speed;
+    sem_post(sem);
+    
+    // Engine braking should cause more rapid deceleration
+    ck_assert_msg(speed_after_tick < speed_after_tick_no_engines, 
+                  "Engine braking effect should cause more rapid deceleration");
+}
+END_TEST
+
+START_TEST(test_vmu_control_engines_state_accel_high_speed_hybrid)
+{
+    // Test high speed (close to MAX) situation in hybrid mode
+    sem_wait(sem);
+    system_state->speed = MAX_SPEED - 20.0;
+    system_state->accelerator = true;
+    system_state->brake = false;
+    system_state->ev_on = true;
+    system_state->iec_on = true;
+    system_state->battery = 80.0; // Battery OK
+    system_state->fuel = 80.0;    // Fuel OK
+    system_state->ev_power_level = 0.8;
+    system_state->iec_power_level = 0.8;
+    sem_post(sem);
+
+    vmu_control_engines();
+
+    sem_wait(sem);
+    ck_assert_msg(system_state->power_mode == 1, "Power mode should be Hybrid (1) at high speed");
+    // At high speed, IEC power should be high and EV contribution might be reduced
+    ck_assert_msg(system_state->ev_power_level <= 1.0, "EV power shouldn't exceed maximum");
+    ck_assert_msg(system_state->iec_power_level > 0.8, "IEC power should increase at high speed");
+    ck_assert_msg(system_state->battery < 80.0, "Battery should decrease when EV is on");
+    ck_assert_msg(system_state->fuel < 80.0, "Fuel should decrease when IEC is on");
+    sem_post(sem);
+}
+END_TEST
+
+START_TEST(test_vmu_control_engines_battery_just_above_critical)
+{
+    // Test with battery just above critical threshold
+    sem_wait(sem);
+    system_state->speed = 30.0;
+    system_state->accelerator = true;
+    system_state->brake = false;
+    system_state->ev_on = true;
+    system_state->iec_on = false;
+    system_state->battery = BATTERY_CRITICAL_THRESHOLD + 0.1; // Just above threshold
+    system_state->fuel = 80.0; // Fuel OK
+    system_state->ev_power_level = 0.5;
+    system_state->iec_power_level = 0.0;
+    sem_post(sem);
+
+    vmu_control_engines();
+
+    sem_wait(sem);
+    ck_assert_msg(system_state->power_mode == 0, "Power mode should be EV Only (0) with battery just above threshold");
+    // EV power should continue to be used as battery is still above threshold
+    ck_assert_msg(system_state->ev_power_level > 0.0, "EV power should be used when battery just above threshold");
+    ck_assert_msg(system_state->battery < (BATTERY_CRITICAL_THRESHOLD + 0.1), 
+                 "Battery should decrease when EV is on");
+    sem_post(sem);
+}
+END_TEST
+
+START_TEST(test_vmu_control_engines_fuel_just_above_critical)
+{
+    // Test with fuel just above critical threshold
+    sem_wait(sem);
+    system_state->speed = 50.0;
+    system_state->accelerator = true;
+    system_state->brake = false;
+    system_state->ev_on = false;
+    system_state->iec_on = true;
+    system_state->battery = 80.0; // Battery OK
+    system_state->fuel = FUEL_CRITICAL_THRESHOLD + 0.1; // Just above threshold
+    system_state->ev_power_level = 0.0;
+    system_state->iec_power_level = 0.5;
+    sem_post(sem);
+
+    vmu_control_engines();
+
+    sem_wait(sem);
+    // This should be hybrid mode since battery is good and fuel is available
+    ck_assert_msg(system_state->power_mode == 1, "Power mode should be Hybrid (1) with fuel just above threshold");
+    ck_assert_msg(system_state->iec_power_level > 0.0, "IEC power should be used when fuel just above threshold");
+    ck_assert_msg(system_state->fuel < (FUEL_CRITICAL_THRESHOLD + 0.1), 
+                 "Fuel should decrease when IEC is on");
+    sem_post(sem);
+}
+END_TEST
+
+START_TEST(test_vmu_control_engines_coast_with_full_battery)
+{
+    // Test coasting with full battery (should not regenerate)
+    sem_wait(sem);
+    system_state->speed = 40.0;
+    system_state->accelerator = false;
+    system_state->brake = false;
+    system_state->ev_on = false;
+    system_state->iec_on = false;
+    system_state->battery = MAX_BATTERY; // Full battery
+    system_state->fuel = 80.0;
+    system_state->ev_power_level = 0.0;
+    system_state->iec_power_level = 0.0;
+    sem_post(sem);
+
+    vmu_control_engines();
+
+    sem_wait(sem);
+    ck_assert_msg(fabs(system_state->battery - MAX_BATTERY) < 1e-9, 
+                 "Battery should remain at MAX_BATTERY when already full");
+    sem_post(sem);
+}
+END_TEST
+
+START_TEST(test_vmu_control_engines_braking_with_full_battery)
+{
+    // Test braking with full battery (should not regenerate more)
+    sem_wait(sem);
+    system_state->speed = 40.0;
+    system_state->accelerator = false;
+    system_state->brake = true;
+    system_state->ev_on = false;
+    system_state->iec_on = false;
+    system_state->battery = MAX_BATTERY; // Full battery
+    system_state->fuel = 80.0;
+    system_state->ev_power_level = 0.0;
+    system_state->iec_power_level = 0.0;
+    sem_post(sem);
+
+    vmu_control_engines();
+
+    sem_wait(sem);
+    ck_assert_msg(system_state->power_mode == 3, "Power mode should be Regenerative Braking (3)");
+    ck_assert_msg(fabs(system_state->battery - MAX_BATTERY) < 1e-9, 
+                 "Battery should remain at MAX_BATTERY when already full");
+    sem_post(sem);
+}
+END_TEST
+
+START_TEST(test_vmu_control_engines_state_accel_ok_battery_low_fuel_above_limit)
+{
+    // Setup: Accelerating, ok battery, low fuel, high speed > limit -> EV Only (Mode 0), power reduced
+    sem_wait(sem);
+    system_state->speed = 80.0; // Well above EV_ONLY_SPEED_LIMIT (60)
+    system_state->accelerator = true;
+    system_state->brake = false;
+    system_state->ev_on = true;
+    system_state->iec_on = false;
+    system_state->battery = BATTERY_CRITICAL_THRESHOLD + 10.0; // Battery OK
+    system_state->fuel = FUEL_CRITICAL_THRESHOLD - 1.0; // Low Fuel
+    system_state->ev_power_level = 0.5;
+    system_state->iec_power_level = 0.0;
+    sem_post(sem);
+
+    vmu_control_engines();
+
+    sem_wait(sem);
+    ck_assert_msg(system_state->power_mode == 0, "Power mode should be EV Only (0) due to low fuel");
+    // At this speed, well above limit, power should be severely reduced
+    double expected_ev_target = fmax(0.0, 0.5 - (80.0 - EV_ONLY_SPEED_LIMIT) * 0.05);
+    ck_assert_msg(system_state->ev_power_level < 0.5, "EV power level should be reduced at high speed with low fuel");
+    sem_post(sem);
+}
+END_TEST
+
+START_TEST(test_vmu_control_engines_battery_recharge_threshold)
+{
+    // Test battery level around BATTERY_RECHARGE_THRESHOLD with IEC charging
+    sem_wait(sem);
+    system_state->speed = 0.0; // Stationary
+    system_state->accelerator = false;
+    system_state->brake = false;
+    system_state->ev_on = false;
+    system_state->iec_on = true; // IEC is on for charging
+    system_state->battery = BATTERY_CRITICAL_THRESHOLD - 1.0; // Just below recharge threshold
+    system_state->fuel = 80.0; // Fuel OK
+    system_state->ev_power_level = 0.0;
+    system_state->iec_power_level = 0.2; // Charging power level
+    sem_post(sem);
+
+    // Run control engines multiple times to observe charging behavior
+    vmu_control_engines();
+    
+    sem_wait(sem);
+    ck_assert_msg(system_state->power_mode == 5, "Power mode should be IEC Charging/Idle (5)");
+    ck_assert_msg(system_state->iec_power_level >= 0.1, "IEC should maintain power for charging");
+    
+    double initial_battery = system_state->battery;
+    sem_post(sem);
+    
+    // Run again to simulate charging
+    vmu_control_engines();
+    
+    sem_wait(sem);
+    ck_assert_msg(system_state->battery > initial_battery, "Battery should increase due to IEC charging");
+    sem_post(sem);
+}
+END_TEST
+
+START_TEST(test_vmu_control_engines_transition_coast_to_accel)
+{
+    // Test transition from coasting to accelerating
+    sem_wait(sem);
+    system_state->speed = 40.0;
+    system_state->accelerator = false;
+    system_state->brake = false;
+    system_state->ev_on = false;
+    system_state->iec_on = false;
+    system_state->battery = 80.0;
+    system_state->fuel = 80.0;
+    system_state->ev_power_level = 0.0;
+    system_state->iec_power_level = 0.0;
+    system_state->was_accelerating = false;
+    sem_post(sem);
+
+    // First control cycle with coasting
+    vmu_control_engines();
+    
+    // Now transition to acceleration
+    sem_wait(sem);
+    system_state->accelerator = true;
+    sem_post(sem);
+    
+    vmu_control_engines();
+    
+    sem_wait(sem);
+    ck_assert_msg(system_state->was_accelerating == true, "was_accelerating should be true after transition");
+    ck_assert_msg(system_state->ev_power_level > 0.0, "EV power level should increase after starting acceleration");
+    sem_post(sem);
+}
+END_TEST
+
+START_TEST(test_vmu_control_engines_transition_accel_to_brake)
+{
+    // Test transition from accelerating to braking
+    sem_wait(sem);
+    system_state->speed = 40.0;
+    system_state->accelerator = true;
+    system_state->brake = false;
+    system_state->ev_on = true;
+    system_state->iec_on = false;
+    system_state->battery = 80.0;
+    system_state->fuel = 80.0;
+    system_state->ev_power_level = 0.5;
+    system_state->iec_power_level = 0.0;
+    system_state->was_accelerating = true;
+    sem_post(sem);
+
+    // First control cycle with acceleration
+    vmu_control_engines();
+    
+    // Now transition to braking
+    sem_wait(sem);
+    system_state->accelerator = false;
+    system_state->brake = true;
+    sem_post(sem);
+    
+    vmu_control_engines();
+    
+    sem_wait(sem);
+    ck_assert_msg(system_state->was_accelerating == false, "was_accelerating should be false after transition to braking");
+    ck_assert_msg(system_state->power_mode == 3, "Power mode should be Regenerative Braking (3)");
+    ck_assert_msg(system_state->ev_power_level < 0.5, "EV power should decrease when braking");
+    sem_post(sem);
+}
+END_TEST
+
+START_TEST(test_vmu_control_engines_power_ramping)
+{
+    // Test power ramping behavior over multiple control cycles
+    sem_wait(sem);
+    system_state->speed = 30.0;
+    system_state->accelerator = true;
+    system_state->brake = false;
+    system_state->ev_on = true;
+    system_state->iec_on = false;
+    system_state->battery = 50.0;
+    system_state->fuel = 80.0;
+    system_state->ev_power_level = 0.3;
+    system_state->iec_power_level = 0.0;
+    sem_post(sem);
+
+    // Run multiple control cycles to observe power ramping
+    for (int i = 0; i < 10; i++) {
+        vmu_control_engines();
+        
+        sem_wait(sem);
+        if (system_state->ev_power_level >= 0.4) {
+            // Stop once we've ramped close to target
+            sem_post(sem);
+            break;
+        }
+        sem_post(sem);
+    }
+    
+    sem_wait(sem);
+    // Target at 30.0 km/h would be ~0.1 + (30/40) = 0.1 + 0.75 = 0.85, but ramping limited by POWER_INCREASE_RATE
+    double expected_min_power = fmin(10 * POWER_INCREASE_RATE, 0.6);
+    ck_assert_msg(system_state->ev_power_level >= expected_min_power,
+                 "EV power should ramp up gradually over multiple cycles");
+    ck_assert_msg(system_state->ev_power_level <= 0.85, 
+                 "EV power should not exceed calculated target");
+    sem_post(sem);
 }
 END_TEST
 
@@ -970,6 +1365,7 @@ Suite *vmu_suite(void) {
     TCase *tc_signals; // Signal handler tests (direct call)
     TCase *tc_engine_control_state; // Engine control logic state tests
     TCase *tc_display; // Display function tests
+    TCase *tc_transitions; // State transition and edge case tests
 
     s = suite_create("VMU Module Tests");
 
@@ -999,6 +1395,9 @@ Suite *vmu_suite(void) {
     tcase_add_test(tc_speed, test_vmu_calculate_speed_ev_fade);
     tcase_add_test(tc_speed, test_vmu_calculate_speed_at_max_speed);
     tcase_add_test(tc_speed, test_vmu_calculate_speed_at_min_speed_braking);
+    tcase_add_test(tc_speed, test_vmu_calculate_speed_exact_at_min_speed);
+    tcase_add_test(tc_speed, test_vmu_calculate_speed_near_max_speed);
+    tcase_add_test(tc_speed, test_vmu_calculate_speed_engine_braking_effect);
     suite_add_tcase(s, tc_speed);
 
 
@@ -1007,6 +1406,7 @@ Suite *vmu_suite(void) {
     // No fixture needed as we directly call the handler and check globals
     tcase_add_test(tc_signals, test_vmu_handle_signal_pause);
     tcase_add_test(tc_signals, test_vmu_handle_signal_shutdown);
+    tcase_add_test(tc_signals, test_vmu_handle_signal_unknown);
     suite_add_tcase(s, tc_signals);
 
     // Engine control logic state tests (No MQ checks)
@@ -1021,8 +1421,23 @@ Suite *vmu_suite(void) {
     tcase_add_test(tc_engine_control_state, test_vmu_control_engines_state_accel_ok_battery_low_fuel_below_limit);
     tcase_add_test(tc_engine_control_state, test_vmu_control_engines_state_accel_ok_battery_low_fuel_at_limit);
     tcase_add_test(tc_engine_control_state, test_vmu_control_engines_state_accel_low_battery_low_fuel);
+    tcase_add_test(tc_engine_control_state, test_vmu_control_engines_state_accel_high_speed_hybrid);
+    tcase_add_test(tc_engine_control_state, test_vmu_control_engines_battery_just_above_critical);
+    tcase_add_test(tc_engine_control_state, test_vmu_control_engines_fuel_just_above_critical);
+    tcase_add_test(tc_engine_control_state, test_vmu_control_engines_coast_with_full_battery);
+    tcase_add_test(tc_engine_control_state, test_vmu_control_engines_braking_with_full_battery);
+    tcase_add_test(tc_engine_control_state, test_vmu_control_engines_state_accel_ok_battery_low_fuel_above_limit);
+    tcase_add_test(tc_engine_control_state, test_vmu_control_engines_battery_recharge_threshold);
     // Add more state tests for other vmu_control_engines scenarios here...
     suite_add_tcase(s, tc_engine_control_state);
+    
+    // State transition and multi-cycle tests
+    tc_transitions = tcase_create("StateTransitions");
+    tcase_add_checked_fixture(tc_transitions, vmu_setup, vmu_teardown);
+    tcase_add_test(tc_transitions, test_vmu_control_engines_transition_coast_to_accel);
+    tcase_add_test(tc_transitions, test_vmu_control_engines_transition_accel_to_brake);
+    tcase_add_test(tc_transitions, test_vmu_control_engines_power_ramping);
+    suite_add_tcase(s, tc_transitions);
 
     // Display function tests
     tc_display = tcase_create("Display");

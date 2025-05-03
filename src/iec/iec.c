@@ -20,6 +20,7 @@ sem_t *sem;                // Pointer to the semaphore for synchronizing access 
 mqd_t iec_mq_receive;      // Message queue descriptor for receiving commands for the IEC module
 volatile sig_atomic_t running = 1; // Flag to control the main loop, volatile to ensure visibility across threads
 volatile sig_atomic_t paused = 0;  // Flag to indicate if the simulation is paused
+int shm_fd = -1;
 // EngineCommand cmd; // No need for a global command struct if processed immediately
 
 // Function to handle signals (SIGUSR1 for pause, SIGINT/SIGTERM for shutdown)
@@ -34,17 +35,17 @@ void handle_signal(int sig) {
 }
 
 // Function to initialize communication with VMU
-void init_communication() {
+int init_communication_iec(char * shared_mem_name, char * semaphore_name, char * iec_queue_name) {
     // Configure signal handlers for graceful shutdown and pause
     signal(SIGUSR1, handle_signal);
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
     // Configuration of shared memory for IEC (Open read-write to update state)
-    int shm_fd = shm_open(SHARED_MEM_NAME, O_RDWR, 0666);
+    shm_fd = shm_open(shared_mem_name, O_RDWR, 0666);
     if (shm_fd == -1) {
         perror("[IEC] Error opening shared memory");
-        exit(EXIT_FAILURE);
+        return 0;
     }
 
     // Map shared memory into IEC's address space
@@ -52,17 +53,17 @@ void init_communication() {
     if (system_state == MAP_FAILED) {
         perror("[IEC] Error mapping shared memory");
         close(shm_fd); // Close file descriptor before exiting
-        exit(EXIT_FAILURE);
+        return 0;
     }
     close(shm_fd); // Close the file descriptor as the mapping is done
 
     // Open the semaphore for synchronization (it should already be created by VMU)
-    sem = sem_open(SEMAPHORE_NAME, 0); // 0 flag means don't create, just open
+    sem = sem_open(semaphore_name, 0); // 0 flag means don't create, just open
     if (sem == SEM_FAILED) {
         perror("[IEC] Error opening semaphore");
         // Clean up shared memory before exiting
         munmap(system_state, sizeof(SystemState));
-        exit(EXIT_FAILURE); // Exit, VMU will handle unlinking
+        return 0; // Exit, VMU will handle unlinking
     }
 
     // Configuration of POSIX message queue for receiving commands for the IEC module
@@ -75,17 +76,18 @@ void init_communication() {
      // Open message queue read-only, non-blocking. Use O_CREAT in case VMU fails to create it.
     // Note: O_CREAT here is generally less safe if VMU *isn't* the creator and cleanup is complex.
     // Prefer VMU to create/unlink, and modules just open. But keeping O_CREAT for robustness.
-    iec_mq_receive = mq_open(IEC_COMMAND_QUEUE_NAME, O_RDONLY | O_CREAT | O_NONBLOCK, 0666, &iec_mq_attributes);
+    iec_mq_receive = mq_open(iec_queue_name, O_RDONLY | O_CREAT | O_NONBLOCK, 0666, &iec_mq_attributes);
     if (iec_mq_receive == (mqd_t)-1) {
         perror("[IEC] Error creating/opening message queue");
         // Clean up shared memory and semaphore before exiting
         munmap(system_state, sizeof(SystemState));
         sem_close(sem);
         // No need to unlink semaphore or shm here, VMU does that
-        exit(EXIT_FAILURE);
+        return 0;
     }
 
     printf("IEC Module Running\n");
+    return 1;
 }
 
 void receive_cmd() {
@@ -165,7 +167,7 @@ void engine() {
         }
         
         // Aumentar temperatura com base no nível de potência
-        new_temp += power_level * IEC_TEMP_INCREASE_RATE;
+        new_temp += new_rpm * 0.001 * IEC_TEMP_INCREASE_RATE;
         if (new_temp > 105.0) new_temp = 105.0; // Temperatura máxima
     } else {
         int target_rpm = (int)(power_level * (MAX_IEC_RPM - IEC_IDLE_RPM));

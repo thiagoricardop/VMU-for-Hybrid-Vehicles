@@ -364,7 +364,7 @@ void vmu_control_engines() {
         // Keep IEC on for charging if conditions met
         bool keep_iec_for_charge = (!current_accelerator && !current_brake && // Not actively accelerating or braking
                                      current_speed > MIN_SPEED && // Vehicle is moving (coast charging)
-                                     current_battery < MAX_BATTERY * 0.8 && // Battery not full
+                                     current_battery < 100 * 0.8 && // Battery not full
                                      fuel_ok);
 
         // If in !battery ok && fuel ok state and not accelerating/braking, keep IEC on for charging regardless of speed (if fuel ok)
@@ -376,14 +376,7 @@ void vmu_control_engines() {
                   calculated_iec_power_level = fmin(calculated_iec_power_level + POWER_INCREASE_RATE, target_iec_power);
              }
              desired_iec_on = true; // Ensure IEC is on for charging
-        } else if (keep_iec_for_charge) {
-             // If general charging conditions met (not the emergency low battery case)
-             target_iec_power = 0.1; // Use a minimum power for charging when coasting/idle
-              if (calculated_iec_power_level < target_iec_power) {
-                  calculated_iec_power_level = fmin(calculated_iec_power_level + POWER_INCREASE_RATE, target_iec_power);
-             }
-             desired_iec_on = true;
-        }
+        } 
 
 
         // Regenerative braking logic determines power mode, but doesn't necessarily keep EV motor 'on' for propulsion
@@ -450,20 +443,7 @@ void vmu_control_engines() {
     // Only send SET_POWER if the engine is actually reported as ON.
     if (current_ev_on) {
          ev_cmd.type = CMD_SET_POWER; // Overwrite START/STOP if already set (prioritize START/STOP for state change)
-         // A better approach is to check if a START/STOP command was already prepared.
-         if (ev_cmd.type == 0) { // If no START or STOP command was prepared for EV
-             ev_cmd.type = CMD_SET_POWER;
-             ev_cmd.power_level = calculated_ev_power_level;
-             send_ev_cmd = true;
-         } else if (ev_cmd.type == CMD_STOP) {
-              // If we just sent a STOP command, sending SET_POWER might be redundant or incorrect.
-              // Assume STOP command is sufficient to initiate shutdown. Do not send SET_POWER.
-         } else if (ev_cmd.type == CMD_START) {
-              // If we just sent a START command, sending SET_POWER immediately might be necessary
-              // depending on the module's implementation. Assuming for now that SET_POWER
-              // should follow START once the module is ready (i.e., in the next cycle when current_ev_on becomes true).
-              // So, only send SET_POWER if CMD_START was NOT sent in this cycle.
-         }
+         
     }
 
     // Refined EV Command Logic: Prioritize state changes (START/STOP), then send power levels if engine is ON.
@@ -538,23 +518,23 @@ void vmu_control_engines() {
     // Lógica de recarga da bateria pelo IEC (when it's acting as a generator/charging)
     // Recharge when IEC is actually ON and fuel is available.
     // The recharge rate is proportional to the commanded IEC power level in this simplified model.
-    if (current_iec_on && fuel_ok && new_battery < MAX_BATTERY) {
-         new_battery += IEC_RECHARGE_RATE * calculated_iec_power_level;
-         if (new_battery > MAX_BATTERY) new_battery = MAX_BATTERY;
+    if (current_iec_on && fuel_ok && new_battery < 100) {
+         new_battery += IEC_RECHARGE_RATE;
+         if (new_battery > 100) new_battery = 100;
     }
 
     // Recarga regenerativa (EV motor acting as generator) - happens when braking/coasting at speed
     // VMU calculates the effect on the battery. This happens regardless of whether the EV motor is 'on' for propulsion,
     // as long as the EV module is capable of performing regen (which it should be if it's part of the system).
     // This logic uses current speed and brake state to calculate the regen amount.
-    if (!current_accelerator && current_speed > MIN_SPEED && new_battery < MAX_BATTERY) { // Only regenerate if battery is not full and car is moving/braking
+    if (!current_accelerator && current_speed > MIN_SPEED && new_battery < 100) { // Only regenerate if battery is not full and car is moving/braking
          if (current_brake) {
              new_battery += REGEN_BRAKE_RATE * (current_speed / MAX_SPEED);
-             if (new_battery > MAX_BATTERY) new_battery = MAX_BATTERY;
+             if (new_battery > 100) new_battery = 100;
          } else {
              // Regenerative braking can happen slightly even when coasting at speed
              new_battery += REGEN_COAST_RATE * (current_speed / MAX_SPEED);
-             if (new_battery > MAX_BATTERY) new_battery = MAX_BATTERY;
+             if (new_battery > 100) new_battery = 100;
          }
      }
 
