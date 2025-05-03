@@ -164,10 +164,7 @@ void engine() {
         int target_rpm = (int)(ev_power_level * MAX_EV_RPM);
         
         // Smoothly transition RPM (using local variables)
-        if (rpm_ev< target_rpm) {
-            new_rpm += (int)(MAX_EV_RPM * POWER_INCREASE_RATE);
-            if (new_rpm > target_rpm) new_rpm = target_rpm;
-        } else if (rpm_ev > target_rpm) {
+        if (rpm_ev > target_rpm) {
             new_rpm -= (int)(MAX_EV_RPM * POWER_DECREASE_RATE * 0.5);
             if (new_rpm < target_rpm) new_rpm = target_rpm;
         }

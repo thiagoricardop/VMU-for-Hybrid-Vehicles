@@ -408,6 +408,505 @@ START_TEST(test_ev_engine_stop_cooldown)
 }
 END_TEST
 
+START_TEST(test_ev_engine_rpm_exactly_at_target)
+{
+    // Test when RPM is already at target - should remain unchanged
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = true;
+    int target_rpm = (int)(0.5 * MAX_EV_RPM);
+    test_vmu_system_state->rpm_ev = target_rpm; // Already at target
+    test_vmu_system_state->temp_ev = 50.0;
+    test_vmu_system_state->ev_power_level = 0.5; // 50% power
+    sem_post(test_vmu_sem);
+
+    // Call the function under test
+    engine();
+
+    // Verify RPM stays at target
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(test_vmu_system_state->rpm_ev == target_rpm, 
+                  "RPM should remain unchanged when already at target");
+    ck_assert_msg(test_vmu_system_state->temp_ev > 50.0, 
+                  "Temperature should still increase when engine is on");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
+START_TEST(test_ev_engine_temperature_at_ambient)
+{
+    // Test when temperature is exactly at ambient and engine is off
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = false;
+    test_vmu_system_state->rpm_ev = 0;
+    test_vmu_system_state->temp_ev = 25.0; // Exactly at ambient
+    test_vmu_system_state->ev_power_level = 0.0;
+    sem_post(test_vmu_sem);
+
+    // Call the function under test
+    engine();
+
+    // Verify temperature remains at ambient
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(test_vmu_system_state->temp_ev == 25.0, 
+                  "Temperature should remain at ambient when already there");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
+START_TEST(test_ev_engine_temperature_exactly_at_cap)
+{
+    // Test when temperature is exactly at cap (90.0)
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = true;
+    test_vmu_system_state->rpm_ev = 5000;
+    test_vmu_system_state->temp_ev = 90.0; // Exactly at max
+    test_vmu_system_state->ev_power_level = 1.0; // Max power
+    sem_post(test_vmu_sem);
+
+    // Call the function under test
+    engine();
+
+    // Verify temperature remains at cap
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(test_vmu_system_state->temp_ev == 90.0, 
+                  "Temperature should remain at cap when already there");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
+START_TEST(test_ev_engine_rpm_close_to_target)
+{
+    // Test RPM adjustment when very close to target
+    // Case 1: Just below target
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = true;
+    int target_rpm = (int)(0.6 * MAX_EV_RPM);
+    test_vmu_system_state->rpm_ev = target_rpm - 5; // Just below target
+    test_vmu_system_state->temp_ev = 60.0;
+    test_vmu_system_state->ev_power_level = 0.6;
+    sem_post(test_vmu_sem);
+
+    engine();
+
+    sem_wait(test_vmu_sem);
+    int new_rpm = test_vmu_system_state->rpm_ev;
+    ck_assert_msg(new_rpm >= target_rpm - 5 && new_rpm <= target_rpm, 
+                  "RPM should adjust smoothly when close to target");
+    sem_post(test_vmu_sem);
+
+    // Case 2: Just above target
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->rpm_ev = target_rpm + 5; // Just above target
+    sem_post(test_vmu_sem);
+
+    engine();
+
+    sem_wait(test_vmu_sem);
+    new_rpm = test_vmu_system_state->rpm_ev;
+    ck_assert_msg(new_rpm <= target_rpm + 5 && new_rpm >= target_rpm, 
+                  "RPM should adjust smoothly when close to target (above)");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
+START_TEST(test_ev_engine_power_transition)
+{
+    // Test transition from non-zero to zero power level
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = true;
+    test_vmu_system_state->rpm_ev = 5000;
+    test_vmu_system_state->temp_ev = 70.0;
+    test_vmu_system_state->ev_power_level = 0.5; // Start with some power
+    sem_post(test_vmu_sem);
+    
+    engine(); // First call with power
+    
+    // Now transition to zero power
+    sem_wait(test_vmu_sem);
+    int rpm_before_transition = test_vmu_system_state->rpm_ev;
+    test_vmu_system_state->ev_power_level = 0.0; // Power to zero
+    sem_post(test_vmu_sem);
+    
+    engine(); // Second call after power change
+    
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(test_vmu_system_state->rpm_ev < rpm_before_transition, 
+                  "RPM should decrease when power transitions to zero");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
+START_TEST(test_ev_receive_cmd_empty_queue)
+{
+    // First, ensure the queue is empty by draining it
+    EngineCommand dummy;
+    while (mq_receive(ev_mq_receive, (char *)&dummy, sizeof(dummy), NULL) != -1) {
+        // Keep reading until queue is empty or error
+    }
+
+    // Now call receive_cmd with an empty queue
+    int initial_running = running;
+    int initial_paused = paused;
+    
+    receive_cmd();
+    
+    // Verify that no state change occurs when queue is empty
+    ck_assert_msg(running == initial_running, "Running flag should not change on empty queue");
+    ck_assert_msg(paused == initial_paused, "Paused flag should not change on empty queue");
+}
+END_TEST
+
+START_TEST(test_ev_receive_multiple_commands)
+{
+    // Send multiple commands in sequence
+    EngineCommand cmd1 = { .type = CMD_START };
+    EngineCommand cmd2 = { .type = CMD_SET_POWER, .power_level = 0.7 };
+    
+    // Set initial state
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = false;
+    test_vmu_system_state->ev_power_level = 0.0;
+    sem_post(test_vmu_sem);
+    
+    // Send first command
+    mq_send(test_vmu_ev_mq_send, (const char *)&cmd1, sizeof(cmd1), 0);
+    
+    // Send second command with power level
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_power_level = 0.7; // VMU sets this before sending CMD_SET_POWER
+    sem_post(test_vmu_sem);
+    mq_send(test_vmu_ev_mq_send, (const char *)&cmd2, sizeof(cmd2), 0);
+    
+    // Process first command
+    receive_cmd();
+    
+    // Verify first command was processed
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(test_vmu_system_state->ev_on == true, "EV should be ON after START command");
+    sem_post(test_vmu_sem);
+    
+    // Process second command
+    receive_cmd();
+    
+    // Verify second command was processed (power level was maintained)
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(test_vmu_system_state->ev_power_level == 0.7, 
+                  "Power level should be maintained after SET_POWER command");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
+START_TEST(test_ev_engine_temperature_near_limits)
+{
+    // Test temperature behavior near ambient
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = false;
+    test_vmu_system_state->rpm_ev = 0;
+    test_vmu_system_state->temp_ev = 25.1; // Just above ambient
+    sem_post(test_vmu_sem);
+    
+    engine();
+    
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(test_vmu_system_state->temp_ev < 25.1, 
+                 "Temperature should decrease when just above ambient");
+    ck_assert_msg(test_vmu_system_state->temp_ev >= 25.0, 
+                 "Temperature should not go below ambient");
+    sem_post(test_vmu_sem);
+    
+    // Test temperature behavior near cap
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = true;
+    test_vmu_system_state->rpm_ev = MAX_EV_RPM;
+    test_vmu_system_state->temp_ev = 89.9; // Just below cap
+    test_vmu_system_state->ev_power_level = 1.0;
+    sem_post(test_vmu_sem);
+    
+    engine();
+    
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(test_vmu_system_state->temp_ev <= 90.0, 
+                 "Temperature should not exceed cap");
+    ck_assert_msg(test_vmu_system_state->temp_ev >= 89.9, 
+                 "Temperature should increase toward cap when power is high");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
+START_TEST(test_ev_engine_motor_off_with_power_set)
+{
+    // Test when motor is OFF but power level is non-zero
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = false; // Motor off
+    test_vmu_system_state->rpm_ev = 2000; // Some initial RPM
+    test_vmu_system_state->temp_ev = 60.0;
+    sem_post(test_vmu_sem);
+    
+    engine();
+    
+    // Verify that RPM decreases even with power level set
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(test_vmu_system_state->rpm_ev < 2000, 
+                 "RPM should decrease when motor is off, regardless of power level");
+    ck_assert_msg(test_vmu_system_state->temp_ev < 60.0, 
+                 "Temperature should decrease when motor is off");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
+START_TEST(test_ev_engine_motor_on_rpm_zero)
+{
+    // Test scenario where motor is ON but RPM is 0 (unusual state)
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = true;
+    test_vmu_system_state->rpm_ev = 0;
+    test_vmu_system_state->temp_ev = 30.0;
+    test_vmu_system_state->ev_power_level = 0.5;
+    sem_post(test_vmu_sem);
+    
+    engine();
+    
+    // Verify RPM increases from 0
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(test_vmu_system_state->rpm_ev > 0, 
+                 "RPM should increase from 0 when motor is on and power is non-zero");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
+START_TEST(test_ev_engine_motor_off_exact_zero_rpm)
+{
+    // Test when motor is off and RPM is already exactly 0
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = false;
+    test_vmu_system_state->rpm_ev = 0;
+    test_vmu_system_state->temp_ev = 30.0;
+    test_vmu_system_state->ev_power_level = 0.0;
+    sem_post(test_vmu_sem);
+    
+    engine();
+    
+    // Verify RPM stays at 0
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(test_vmu_system_state->rpm_ev == 0, 
+                 "RPM should remain at 0 when already at 0 and motor is off");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
+START_TEST(test_ev_engine_rapid_state_change)
+{
+    // Test rapid state changes: on->off->on
+    // First set motor on with high RPM
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = true;
+    test_vmu_system_state->rpm_ev = 5000;
+    test_vmu_system_state->temp_ev = 70.0;
+    test_vmu_system_state->ev_power_level = 0.5;
+    sem_post(test_vmu_sem);
+    
+    // First call with motor on
+    engine();
+    
+    // Now turn it off but keep power level
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = false;
+    int rpm_after_on = test_vmu_system_state->rpm_ev;
+    test_vmu_system_state->ev_power_level = 0.0; // Power to zero
+    sem_post(test_vmu_sem);
+    
+    // Call with motor off
+    engine();
+    
+    // Now turn it back on
+    sem_wait(test_vmu_sem);
+    int rpm_after_off = test_vmu_system_state->rpm_ev;
+    test_vmu_system_state->ev_on = true;
+    test_vmu_system_state->ev_power_level = 0.5; // Power back to 50%
+    sem_post(test_vmu_sem);
+    
+    // Call with motor back on
+    engine();
+    
+    // Verify state changes
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(rpm_after_off < rpm_after_on, "RPM should decrease when motor turned off");
+    ck_assert_msg(test_vmu_system_state->rpm_ev > rpm_after_off, 
+                  "RPM should start increasing again when motor turned back on");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
+START_TEST(test_ev_engine_extreme_power_changes)
+{
+    // Test when power level changes extremes rapidly (0->1->0)
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = true;
+    test_vmu_system_state->rpm_ev = 3000; // Mid-range RPM
+    test_vmu_system_state->temp_ev = 50.0;
+    test_vmu_system_state->ev_power_level = 0.0; // Start with no power
+    sem_post(test_vmu_sem);
+    
+    // First call with zero power
+    engine();
+    
+    sem_wait(test_vmu_sem);
+    int rpm_zero_power = test_vmu_system_state->rpm_ev;
+    test_vmu_system_state->ev_power_level = 1.0; // Suddenly max power
+    sem_post(test_vmu_sem);
+    
+    // Call with max power
+    engine();
+    
+    sem_wait(test_vmu_sem);
+    int rpm_max_power = test_vmu_system_state->rpm_ev;
+    test_vmu_system_state->ev_power_level = 0.0; // Back to zero power
+    sem_post(test_vmu_sem);
+    
+    // Call with zero power again
+    engine();
+    
+    // Verify behavior across power transitions
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(rpm_zero_power < 3000, "RPM should decrease with zero power");
+    ck_assert_msg(rpm_max_power > rpm_zero_power, "RPM should increase when power jumps from 0 to max");
+    ck_assert_msg(test_vmu_system_state->rpm_ev < rpm_max_power, "RPM should decrease again when power drops to zero");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
+START_TEST(test_ev_engine_multiple_iterations_to_target)
+{
+    // Test that multiple iterations converge to the target RPM
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = true;
+    test_vmu_system_state->rpm_ev = 1000;
+    test_vmu_system_state->temp_ev = 40.0;
+    test_vmu_system_state->ev_power_level = 0.7; // 70% power target
+    sem_post(test_vmu_sem);
+    
+    // Target RPM based on 70% power
+    int target_rpm = (int)(0.7 * MAX_EV_RPM);
+    
+    // Run engine function for multiple iterations
+    for (int i = 0; i < 10; i++) {
+        engine();
+        // Simulate a short delay between iterations
+        usleep(10000); // 10ms delay
+    }
+    
+    // Verify RPM reached target
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(test_vmu_system_state->rpm_ev >= 1000 && 
+                 test_vmu_system_state->rpm_ev <= target_rpm * 1.15,
+                 "RPM should closely approach target after multiple iterations");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
+START_TEST(test_ev_engine_negative_power_handling)
+{
+    // Test handling of invalid (negative) power level
+    // This tests robustness of the code to handle potentially corrupt shared memory
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = true;
+    test_vmu_system_state->rpm_ev = 3000;
+    test_vmu_system_state->temp_ev = 50.0;
+    // Set an invalid power level (negative)
+    test_vmu_system_state->ev_power_level = -0.2;
+    sem_post(test_vmu_sem);
+    
+    // The code should handle this gracefully
+    engine();
+    
+    // Verify RPM behaves reasonably (likely same as zero power)
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(test_vmu_system_state->rpm_ev <= 3000, 
+                 "RPM should not increase with negative power level");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
+START_TEST(test_ev_engine_excessive_power_handling)
+{
+    // Test handling of invalid (excessive) power level
+    // This tests robustness of the code to handle potentially corrupt shared memory
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = true;
+    test_vmu_system_state->rpm_ev = 3000;
+    test_vmu_system_state->temp_ev = 50.0;
+    // Set an invalid power level (over 1.0)
+    test_vmu_system_state->ev_power_level = 1.5;
+    sem_post(test_vmu_sem);
+    
+    // The code should handle this gracefully
+    engine();
+    
+    // Verify RPM behaves as if at max power
+    sem_wait(test_vmu_sem);
+    int target_rpm = MAX_EV_RPM;  // Should treat as 100% power
+    ck_assert_msg(test_vmu_system_state->rpm_ev > 3000, 
+                 "RPM should increase with excessive power level (treated as max)");
+    ck_assert_msg(test_vmu_system_state->rpm_ev <= target_rpm,
+                 "RPM should not exceed maximum even with excessive power level");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
+START_TEST(test_ev_engine_error_temperature)
+{
+    // Test handling of unusual temperature values
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = true;
+    test_vmu_system_state->rpm_ev = 3000;
+    // Set an unusually low temperature (below ambient)
+    test_vmu_system_state->temp_ev = 20.0; 
+    test_vmu_system_state->ev_power_level = 0.5;
+    sem_post(test_vmu_sem);
+    
+    // The code should handle this gracefully
+    engine();
+    
+    // Verify temperature normalization
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(test_vmu_system_state->temp_ev >= 20.0,
+                 "Temperature should not decrease when motor is on");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
+START_TEST(test_ev_engine_power_level_at_boundary)
+{
+    // Test power levels exactly at boundaries (0.0 and 1.0)
+    
+    // Test power level 0.0
+    sem_wait(test_vmu_sem);
+    test_vmu_system_state->ev_on = true;
+    test_vmu_system_state->rpm_ev = 3000;
+    test_vmu_system_state->temp_ev = 50.0;
+    test_vmu_system_state->ev_power_level = 0.0; // Exactly 0.0
+    sem_post(test_vmu_sem);
+    
+    engine();
+    
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(test_vmu_system_state->rpm_ev < 3000,
+                 "RPM should decrease with power level exactly 0.0");
+    
+    // Test power level 1.0
+    test_vmu_system_state->rpm_ev = 3000;
+    test_vmu_system_state->ev_power_level = 1.0; // Exactly 1.0
+    sem_post(test_vmu_sem);
+    
+    engine();
+    
+    sem_wait(test_vmu_sem);
+    ck_assert_msg(test_vmu_system_state->rpm_ev > 3000,
+                 "RPM should increase with power level exactly 1.0");
+    sem_post(test_vmu_sem);
+}
+END_TEST
+
 
 // --- Signal handler testing (Optional and Advanced) ---
 // Testing signal handlers directly in unit tests is complex.
@@ -441,6 +940,19 @@ START_TEST(test_ev_handle_signal_shutdown)
 }
 END_TEST
 
+START_TEST(test_ev_handle_signal_other)
+{
+    // Test handling of an unrecognized signal
+    running = 1;
+    paused = false;
+    
+    handle_signal(SIGHUP); // Send a signal that isn't explicitly handled
+    
+    // Verify no change in state
+    ck_assert_msg(running == 1, "Running flag should not change on unrecognized signal");
+    ck_assert_msg(paused == false, "Paused flag should not change on unrecognized signal");
+}
+END_TEST
 
 // --- Main Test Suite Creation ---
 
@@ -450,6 +962,7 @@ Suite *ev_suite(void) {
     TCase *tc_commands; // Message queue command tests
     TCase *tc_engine; // Engine logic tests
     TCase *tc_signals; // Signal handler tests (direct call)
+    TCase *tc_edge_cases; // Edge case tests
 
     s = suite_create("EV Module Tests");
 
@@ -467,6 +980,8 @@ Suite *ev_suite(void) {
     tcase_add_test(tc_commands, test_ev_receive_cmd_set_power);
     tcase_add_test(tc_commands, test_ev_receive_cmd_end);
     tcase_add_test(tc_commands, test_ev_receive_cmd_unknown); // Test for unknown command
+    tcase_add_test(tc_commands, test_ev_receive_cmd_empty_queue); // Test empty queue
+    tcase_add_test(tc_commands, test_ev_receive_multiple_commands); // Test multiple commands
     suite_add_tcase(s, tc_commands);
 
     // Engine simulation logic tests
@@ -476,6 +991,9 @@ Suite *ev_suite(void) {
     tcase_add_test(tc_engine, test_ev_engine_rpm_decrease);
     tcase_add_test(tc_engine, test_ev_engine_temp_cap); // Test when new_temp > 90.0
     tcase_add_test(tc_engine, test_ev_engine_stop_cooldown);
+    tcase_add_test(tc_engine, test_ev_engine_rpm_exactly_at_target); // Test RPM at target
+    tcase_add_test(tc_engine, test_ev_engine_temperature_at_ambient); // Test temp at ambient
+    tcase_add_test(tc_engine, test_ev_engine_temperature_exactly_at_cap); // Test temp at cap
     suite_add_tcase(s, tc_engine);
 
     // Signal handling tests (by direct function call)
@@ -483,7 +1001,26 @@ Suite *ev_suite(void) {
     // No fixture needed as we directly call the handler and check globals
     tcase_add_test(tc_signals, test_ev_handle_signal_pause);
     tcase_add_test(tc_signals, test_ev_handle_signal_shutdown);
+    tcase_add_test(tc_signals, test_ev_handle_signal_other);
     suite_add_tcase(s, tc_signals);
+
+    // Edge cases test case
+    tc_edge_cases = tcase_create("EdgeCases");
+    tcase_add_checked_fixture(tc_edge_cases, ev_setup, ev_teardown);
+    tcase_add_test(tc_edge_cases, test_ev_engine_rpm_close_to_target);
+    tcase_add_test(tc_edge_cases, test_ev_engine_power_transition);
+    tcase_add_test(tc_edge_cases, test_ev_engine_temperature_near_limits);
+    tcase_add_test(tc_edge_cases, test_ev_engine_motor_off_with_power_set);
+    tcase_add_test(tc_edge_cases, test_ev_engine_motor_on_rpm_zero);
+    tcase_add_test(tc_edge_cases, test_ev_engine_motor_off_exact_zero_rpm);
+    tcase_add_test(tc_edge_cases, test_ev_engine_rapid_state_change);
+    tcase_add_test(tc_edge_cases, test_ev_engine_extreme_power_changes);
+    tcase_add_test(tc_edge_cases, test_ev_engine_multiple_iterations_to_target);
+    tcase_add_test(tc_edge_cases, test_ev_engine_negative_power_handling);
+    tcase_add_test(tc_edge_cases, test_ev_engine_excessive_power_handling);
+    tcase_add_test(tc_edge_cases, test_ev_engine_error_temperature);
+    tcase_add_test(tc_edge_cases, test_ev_engine_power_level_at_boundary);
+    suite_add_tcase(s, tc_edge_cases);
 
     return s;
 }

@@ -165,7 +165,7 @@ void engine() {
         }
         
         // Aumentar temperatura com base no nível de potência
-        new_temp += power_level * IEC_TEMP_INCREASE_RATE;
+        new_temp += new_rpm * 0.001 * IEC_TEMP_INCREASE_RATE;
         if (new_temp > 105.0) new_temp = 105.0; // Temperatura máxima
     } else {
         int target_rpm = (int)(power_level * (MAX_IEC_RPM - IEC_IDLE_RPM));
