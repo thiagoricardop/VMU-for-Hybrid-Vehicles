@@ -24,6 +24,7 @@ extern sem_t *sem;
 extern mqd_t iec_mq_receive;
 extern volatile sig_atomic_t running;
 extern volatile sig_atomic_t paused;
+extern int shm_fd; //Shared Memory File Descriptor
 
 // --- Declare variables for the resources *created by the test setup* (simulating VMU) ---
 // These descriptors/pointers are held by the test suite to interact with the resources
@@ -135,7 +136,7 @@ void iec_setup(void) {
     // Ensure global flags are reset for each test
     running = 1;
     paused = 0;
-    init_communication();
+    init_communication_iec(SHARED_MEM_NAME, SEMAPHORE_NAME, IEC_COMMAND_QUEUE_NAME);
 
     // Basic check that init_communication succeeded (optional, setup failing is often enough)
     // ck_assert_ptr_ne(system_state, MAP_FAILED);
@@ -175,6 +176,51 @@ START_TEST(test_iec_init_communication_success)
     ck_assert_int_ne(iec_mq_receive, (mqd_t)-1);
     ck_assert_int_eq(running, 1);
     ck_assert_int_eq(paused, 0);
+}
+END_TEST
+
+// Fail to open the Shared Memory File Descriptor
+START_TEST(test_init_communication_shm_fd_fail) {
+    init_communication_iec("fail 1", "fail 2", "fail 3");
+    ck_assert_int_eq(shm_fd, -1);
+}
+END_TEST
+
+// Fail to open the Semaphore
+START_TEST(test_init_communication_sem_fail) {
+    shm_fd = shm_open(SHARED_MEM_NAME, O_CREAT | O_RDWR, 0666);
+    if(shm_fd == -1){
+        perror("[IEC] Error opening shared Memory");
+        exit(EXIT_FAILURE);
+    }
+    close(shm_fd);
+
+    init_communication_iec(SHARED_MEM_NAME, "fail 2", "fail 3");
+    ck_assert_ptr_eq(sem, SEM_FAILED);
+    shm_unlink(SHARED_MEM_NAME);
+}
+END_TEST
+
+// Fail to open IEC's Message Queue
+START_TEST(test_init_communication_iec_queue_fail) {
+    shm_fd = shm_open(SHARED_MEM_NAME, O_CREAT | O_RDWR, 0666);
+    if(shm_fd == -1){
+        perror("[IEC] Error opening shared Memory");
+        exit(EXIT_FAILURE);
+    }
+    close(shm_fd);
+
+    sem = sem_open(SEMAPHORE_NAME, O_CREAT, 0666, 1);
+    if(sem == SEM_FAILED){
+        perror("[IEC] Error opening semaphore");
+        exit(EXIT_FAILURE);
+    }
+    sem_close(sem);
+
+    init_communication_iec(SHARED_MEM_NAME, SEMAPHORE_NAME, "fail 3");
+    ck_assert_int_eq(iec_mq_receive, (mqd_t) - 1);
+    shm_unlink(SHARED_MEM_NAME);
+    sem_unlink(SEMAPHORE_NAME);
 }
 END_TEST
 
@@ -908,6 +954,7 @@ Suite *iec_suite(void) {
     TCase *tc_engine; // Engine logic tests
     TCase *tc_signals; // Signal handler tests (direct call)
     TCase *tc_advanced; // Advanced/edge case tests
+    TCase *tc_init_comm_fail; // Init communication tests fails
 
     s = suite_create("IEC Module Tests");
 
@@ -916,6 +963,13 @@ Suite *iec_suite(void) {
     tcase_add_checked_fixture(tc_core, iec_setup, iec_teardown); // Use checked fixture for setup/teardown
     tcase_add_test(tc_core, test_iec_init_communication_success);
     suite_add_tcase(s, tc_core);
+
+    //TCase for init_communication() with fail
+    tc_init_comm_fail = tcase_create("InitCommunicationFail");
+    tcase_add_test(tc_init_comm_fail, test_init_communication_shm_fd_fail);
+    tcase_add_test(tc_init_comm_fail, test_init_communication_sem_fail);
+    tcase_add_test(tc_init_comm_fail, test_init_communication_iec_queue_fail);
+    suite_add_tcase(s, tc_init_comm_fail);
 
     // Command processing tests
     tc_commands = tcase_create("Commands");

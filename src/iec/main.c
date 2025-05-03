@@ -5,7 +5,10 @@
 
 int main() {
     system("clear");
-    init_communication(); // Initialize communication with VMU
+    // Initialize communication with VMU
+    if(init_communication_iec(SHARED_MEM_NAME, SEMAPHORE_NAME, IEC_COMMAND_QUEUE_NAME) == 0){
+        exit(EXIT_FAILURE);
+    }
     // Main loop of the IEC module
     while (running) {
         if (!paused) {
