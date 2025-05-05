@@ -146,6 +146,9 @@ extern double expectedvalueEV;
 extern double expectedValueIEC;
 extern bool finish;
 extern bool carStop;
+extern unsigned char localcount;
+extern bool testing;
+extern bool vmuProduction;
 
 // Signal handler function (prototype)
 void handle_signal(int sig);

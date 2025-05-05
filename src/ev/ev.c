@@ -146,9 +146,6 @@ void calculateValues () {
     else {
         rpmEV = evPercentage*((localVelocity * 16.67) / tireCircunferenceRatio);
         
-        if (rpmEV > 341.113716) {
-            rpmEV = 341.113716;
-        }
     }
     
 }

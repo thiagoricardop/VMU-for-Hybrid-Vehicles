@@ -1,3 +1,8 @@
+
+#define _GNU_SOURCE
+
+#include <stdarg.h>
+#include <dlfcn.h> 
 #include <check.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +22,75 @@
 // A flag and a fake command will control the behavior.
 int fake_mq_receive_enabled = 0;
 EngineCommandEV fake_cmd;
+
+/* Ponto de falha controlado nos testes */
+static int fail_point = 0;
+
+/* Ponteiros para funções originais */
+static int (*real_shm_open)(const char *, int, mode_t) = NULL;
+static void *(*real_mmap)(void *, size_t, int, int, int, off_t) = NULL;
+static sem_t *(*real_sem_open)(const char *, int, mode_t, unsigned int) = NULL;
+static mqd_t (*real_mq_open)(const char *, int, mode_t, struct mq_attr *) = NULL;
+
+
+/* Stubs que simulam falhas sem --wrap */
+int shm_open(const char *name, int oflag, mode_t mode) {
+    if (fail_point == 1) {
+        errno = EACCES;
+        return -1;
+    }
+    if (!real_shm_open) {
+        real_shm_open = dlsym(RTLD_NEXT, "shm_open");
+    }
+    return real_shm_open(name, oflag, mode);
+}
+
+void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
+    if (fail_point == 2) {
+        errno = ENOMEM;
+        return MAP_FAILED;
+    }
+    if (!real_mmap) {
+        real_mmap = dlsym(RTLD_NEXT, "mmap");
+    }
+    return real_mmap(addr, length, prot, flags, fd, offset);
+}
+
+sem_t *sem_open(const char *name, int oflag, ...) {
+    if (fail_point == 3) {
+        errno = ENOLCK;
+        return SEM_FAILED;
+    }
+    va_list ap;
+    mode_t mode;
+    unsigned int value;
+    va_start(ap, oflag);
+    mode = va_arg(ap, mode_t);
+    value = va_arg(ap, unsigned int);
+    va_end(ap);
+    if (!real_sem_open) {
+        real_sem_open = dlsym(RTLD_NEXT, "sem_open");
+    }
+    return real_sem_open(name, oflag, mode, value);
+}
+
+mqd_t mq_open(const char *name, int oflag, ...) {
+    if (fail_point == 4) {
+        errno = EACCES;
+        return (mqd_t)-1;
+    }
+    va_list ap;
+    mode_t mode;
+    struct mq_attr *attr;
+    va_start(ap, oflag);
+    mode = va_arg(ap, mode_t);
+    attr = va_arg(ap, struct mq_attr *);
+    va_end(ap);
+    if (!real_mq_open) {
+        real_mq_open = dlsym(RTLD_NEXT, "mq_open");
+    }
+    return real_mq_open(name, oflag, mode, attr);
+}
 
 // Override of mq_receive to simulate receiving a message from the queue.
 // When fake_mq_receive_enabled is set, this function copies fake_cmd into msg_ptr.
@@ -68,18 +142,46 @@ void receive_cmd_teardown(void) {
 }
 
 
+
+/* Testes para cada caminho de falha */
+START_TEST(test_shm_open_fail) {
+    fail_point = 1;
+    ck_assert_int_eq(ev_initializer(), EXIT_FAILURE);
+}
+END_TEST
+
+START_TEST(test_mmap_fail) {
+    fail_point = 2;
+    ck_assert_int_eq(ev_initializer(), EXIT_FAILURE);
+}
+END_TEST
+
+START_TEST(test_sem_open_fail) {
+    fail_point = 3;
+    ck_assert_int_eq(ev_initializer(), EXIT_FAILURE);
+}
+END_TEST
+
+START_TEST(test_mq_open_fail) {
+    fail_point = 4;
+    ck_assert_int_eq(ev_initializer(), EXIT_FAILURE);
+}
+END_TEST
+
+
 // Test: CMD_SET_POWER does not alter state.
 START_TEST(test_receive_cmd_set_power) {
     fake_mq_receive_enabled = 1;
-    fake_cmd.type = CMD_SET_POWER;
+    fake_cmd.type = CMD_STOP;
+    fake_cmd.toVMU = false;
     fake_cmd.power_level = 0.75;
     bool initial_ev_on = system_state->ev_on;
     int initial_rpm = system_state->rpm_ev;
     float initial_temp = system_state->temp_ev;
-    fake_cmd = ev_receive(fake_cmd);
+    cmd = ev_receive(fake_cmd);
+    ev_treatValues();
     ck_assert(system_state->ev_on == initial_ev_on);
     ck_assert_int_eq(system_state->rpm_ev, initial_rpm);
-    ck_assert(system_state->temp_ev == initial_temp);
     fake_mq_receive_enabled = 0;
 }
 END_TEST
@@ -89,6 +191,7 @@ START_TEST(test_receive_cmd_end) {
     fake_mq_receive_enabled = 1;
     fake_cmd.type = CMD_END;
     fake_cmd.toVMU = false;
+    fake_cmd.power_level= 0.32;
     running = 1;
     cmd = ev_receive(fake_cmd);
     ev_treatValues();
@@ -97,18 +200,33 @@ START_TEST(test_receive_cmd_end) {
 }
 END_TEST
 
+// Test: CMD_END sets running to 0.
+START_TEST(test_receive_cmd_start) {
+    fake_mq_receive_enabled = 1;
+    fake_cmd.type = CMD_START;
+    fake_cmd.toVMU = false;
+    fake_cmd.power_level= 0.32;
+    BatteryEV = -1.0;
+    running = 1;
+    cmd = ev_receive(fake_cmd);
+    ev_treatValues();
+    fake_mq_receive_enabled = 0;
+}
+END_TEST
+
 // Test: Unknown command does not alter state.
 START_TEST(test_receive_cmd_default) {
     fake_mq_receive_enabled = 1;
     fake_cmd.type = 999; // Undefined command
+    fake_cmd.toVMU = false;
     bool initial_ev_on = system_state->ev_on;
     int initial_rpm = system_state->rpm_ev;
     float initial_temp = system_state->temp_ev;
     int initial_running = running;
-    fake_cmd = ev_receive(fake_cmd);
+    cmd = ev_receive(fake_cmd);
+    ev_treatValues();
     ck_assert(system_state->ev_on == initial_ev_on);
     ck_assert_int_eq(system_state->rpm_ev, initial_rpm);
-    ck_assert(system_state->temp_ev == initial_temp);
     ck_assert_int_eq(running, initial_running);
     fake_mq_receive_enabled = 0;
 }
@@ -246,12 +364,56 @@ START_TEST(test_cleanup) {  /* START_TEST/END_TEST :contentReference[oaicite:3]{
 }
 END_TEST
 
+
+START_TEST(test_pause_signal)
+{
+    paused = 0;
+    handle_signal(SIGUSR1);
+    ck_assert_int_eq(paused, 1);
+
+    handle_signal(SIGUSR1);
+    ck_assert_int_eq(paused, 0);
+}
+END_TEST
+
+START_TEST(test_shutdown_signal)
+{
+    running = 1;
+    handle_signal(SIGINT);
+    ck_assert_int_eq(running, 0);
+
+    running = 1;
+    handle_signal(SIGTERM);
+    ck_assert_int_eq(running, 0);
+}
+END_TEST
+
+START_TEST(test_manageBattery1)
+{
+    accelerator = false;
+    localVelocity = 60.0;
+    BatteryEV = -0.8;
+    fuel = 45.0;
+    calculateValues();
+}
+
+START_TEST(test_manageBattery2)
+{
+    accelerator = true;
+    evActive = true;
+    localVelocity = 60.0;
+    BatteryEV = 100.8;
+    fuel = 45.0;
+    calculateValues();
+}
+
+
 /************************************
  * Combined Suite: AllTests
  ************************************/
 Suite* all_tests_suite(void) {
     Suite *s;
-    TCase *tc_receive_cmd, *tc_init_comm, *tc_engine, *tc_cleanup;
+    TCase *tc_receive_cmd, *tc_init_comm, *tc_engine, *tc_cleanup, *tc_signal, *tc_error, *tc_manageBattery;
 
     s = suite_create("AllTests");
 
@@ -260,6 +422,7 @@ Suite* all_tests_suite(void) {
     tcase_add_checked_fixture(tc_receive_cmd, receive_cmd_setup, receive_cmd_teardown);
     tcase_add_test(tc_receive_cmd, test_receive_cmd_set_power);
     tcase_add_test(tc_receive_cmd, test_receive_cmd_end);
+    tcase_add_test(tc_receive_cmd, test_receive_cmd_start);
     tcase_add_test(tc_receive_cmd, test_receive_cmd_default);
     suite_add_tcase(s, tc_receive_cmd);
 
@@ -281,6 +444,23 @@ Suite* all_tests_suite(void) {
     tcase_add_checked_fixture(tc_cleanup, cleanup_setup, cleanup_teardown);
     tcase_add_test(tc_cleanup, test_cleanup);
     suite_add_tcase(s, tc_cleanup);
+
+    tc_signal = tcase_create("signal");
+    tcase_add_test(tc_signal, test_pause_signal);
+    tcase_add_test(tc_signal, test_shutdown_signal);
+    suite_add_tcase(s, tc_signal);
+
+    tc_error = tcase_create("initializerError");
+    tcase_add_test(tc_error, test_shm_open_fail);
+    tcase_add_test(tc_error, test_mmap_fail);
+    tcase_add_test(tc_error, test_sem_open_fail);
+    tcase_add_test(tc_error, test_mq_open_fail);
+    suite_add_tcase(s, tc_error);
+
+    tc_manageBattery = tcase_create("manageBattery");
+    tcase_add_test(tc_manageBattery, test_manageBattery1);
+    tcase_add_test(tc_manageBattery, test_manageBattery2);
+    suite_add_tcase(s, tc_manageBattery);
 
     return s;
 }

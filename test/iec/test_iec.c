@@ -1,3 +1,7 @@
+#define _GNU_SOURCE
+
+#include <stdarg.h>
+#include <dlfcn.h> 
 #include <check.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +28,15 @@
 int fake_mq_receive_enabled = 0;
 EngineCommandIEC fake_cmd;
 
+/* Ponto de falha controlado nos testes */
+static int fail_point = 0;
+
+/* Ponteiros para funções originais */
+static int (*real_shm_open)(const char *, int, mode_t) = NULL;
+static void *(*real_mmap)(void *, size_t, int, int, int, off_t) = NULL;
+static sem_t *(*real_sem_open)(const char *, int, mode_t, unsigned int) = NULL;
+static mqd_t (*real_mq_open)(const char *, int, mode_t, struct mq_attr *) = NULL;
+
 // Override of mq_receive: when fake_mq_receive_enabled is set,
 // copy fake_cmd into msg_ptr and return its size.
 ssize_t mq_receive(mqd_t mqdes, char *msg_ptr, size_t msg_len, unsigned int *msg_prio) {
@@ -41,6 +54,65 @@ ssize_t mq_receive(mqd_t mqdes, char *msg_ptr, size_t msg_len, unsigned int *msg
 // Fixture for receive_cmd() tests.
 static SystemState *test_system_state = NULL;
 static sem_t *test_sem = NULL;
+
+/* Stubs que simulam falhas sem --wrap */
+int shm_open(const char *name, int oflag, mode_t mode) {
+    if (fail_point == 1) {
+        errno = EACCES;
+        return -1;
+    }
+    if (!real_shm_open) {
+        real_shm_open = dlsym(RTLD_NEXT, "shm_open");
+    }
+    return real_shm_open(name, oflag, mode);
+}
+
+void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
+    if (fail_point == 2) {
+        errno = ENOMEM;
+        return MAP_FAILED;
+    }
+    if (!real_mmap) {
+        real_mmap = dlsym(RTLD_NEXT, "mmap");
+    }
+    return real_mmap(addr, length, prot, flags, fd, offset);
+}
+
+sem_t *sem_open(const char *name, int oflag, ...) {
+    if (fail_point == 3) {
+        errno = ENOLCK;
+        return SEM_FAILED;
+    }
+    va_list ap;
+    mode_t mode;
+    unsigned int value;
+    va_start(ap, oflag);
+    mode = va_arg(ap, mode_t);
+    value = va_arg(ap, unsigned int);
+    va_end(ap);
+    if (!real_sem_open) {
+        real_sem_open = dlsym(RTLD_NEXT, "sem_open");
+    }
+    return real_sem_open(name, oflag, mode, value);
+}
+
+mqd_t mq_open(const char *name, int oflag, ...) {
+    if (fail_point == 4) {
+        errno = EACCES;
+        return (mqd_t)-1;
+    }
+    va_list ap;
+    mode_t mode;
+    struct mq_attr *attr;
+    va_start(ap, oflag);
+    mode = va_arg(ap, mode_t);
+    attr = va_arg(ap, struct mq_attr *);
+    va_end(ap);
+    if (!real_mq_open) {
+        real_mq_open = dlsym(RTLD_NEXT, "mq_open");
+    }
+    return real_mq_open(name, oflag, mode, attr);
+}
 
 void receive_cmd_setup(void) {
     test_system_state = malloc(sizeof(SystemState));
@@ -185,6 +257,31 @@ void cleanup_teardown(void) {
 // Test Cases for IEC Module Functions
 // ------------------------------------------------------------------------
 
+/* Testes para cada caminho de falha */
+START_TEST(test_shm_open_fail) {
+    fail_point = 1;
+    ck_assert_int_eq(iec_initializer(), EXIT_FAILURE);
+}
+END_TEST
+
+START_TEST(test_mmap_fail) {
+    fail_point = 2;
+    ck_assert_int_eq(iec_initializer(), EXIT_FAILURE);
+}
+END_TEST
+
+START_TEST(test_sem_open_fail) {
+    fail_point = 3;
+    ck_assert_int_eq(iec_initializer(), EXIT_FAILURE);
+}
+END_TEST
+
+START_TEST(test_mq_open_fail) {
+    fail_point = 4;
+    ck_assert_int_eq(iec_initializer(), EXIT_FAILURE);
+}
+END_TEST
+
 // Test init_communication(): verifies that shared memory, semaphore, and message queue are set up.
 START_TEST(test_init_communication_success) {
     iec_initializer() ;
@@ -286,6 +383,52 @@ START_TEST(test_engine_off_no_cooling) {
 }
 END_TEST
 
+// Test engine() when IEC is off and temperature equals ambient: temperature remains unchanged.
+START_TEST(test_engine_gear1) {
+    system_state->iec_on = true;
+    system_state->temp_iec = 25.0;
+    localVelocity = 10.0;
+    treatValues();
+    ck_assert_int_eq(gear, 1);
+}
+END_TEST
+
+START_TEST(test_engine_gear2) {
+    system_state->iec_on = true;
+    system_state->temp_iec = 25.0;
+    localVelocity = 20.0;
+    calculateValues();
+    ck_assert_int_eq(gear, 2);
+}
+END_TEST
+
+START_TEST(test_engine_gear3) {
+    system_state->iec_on = true;
+    system_state->temp_iec = 25.0;
+    localVelocity = 35.0;
+    calculateValues();
+    ck_assert_int_eq(gear, 3);
+}
+END_TEST
+
+START_TEST(test_engine_gear4) {
+    system_state->iec_on = true;
+    system_state->temp_iec = 25.0;
+    localVelocity = 50.0;
+    calculateValues();
+    ck_assert_int_eq(gear, 4);
+}
+END_TEST
+
+START_TEST(test_engine_gear5) {
+    system_state->iec_on = true;
+    system_state->temp_iec = 25.0;
+    localVelocity = 80.0;
+    calculateValues();
+    ck_assert_int_eq(gear, 5);
+}
+END_TEST
+
 // Test cleanup(): verifies that resources are released and the shutdown message is printed.
 START_TEST(test_cleanup) {
 
@@ -297,13 +440,36 @@ START_TEST(test_cleanup) {
 }
 END_TEST
 
+START_TEST(test_pause_signal)
+{
+    paused = 0;
+    handle_signal(SIGUSR1);
+    ck_assert_int_eq(paused, 1);
+
+    handle_signal(SIGUSR1);
+    ck_assert_int_eq(paused, 0);
+}
+END_TEST
+
+START_TEST(test_shutdown_signal)
+{
+    running = 1;
+    handle_signal(SIGINT);
+    ck_assert_int_eq(running, 0);
+
+    running = 1;
+    handle_signal(SIGTERM);
+    ck_assert_int_eq(running, 0);
+}
+END_TEST
+
 // ------------------------------------------------------------------------
 // Combined IEC Test Suite
 // ------------------------------------------------------------------------
 
 Suite* iec_tests_suite(void) {
     Suite *s;
-    TCase *tc_init_comm, *tc_receive_cmd, *tc_engine, *tc_cleanup;
+    TCase *tc_init_comm, *tc_receive_cmd, *tc_engine, *tc_cleanup, *tc_error, *tc_signal;
 
     s = suite_create("IEC_Module_Tests");
 
@@ -328,6 +494,11 @@ Suite* iec_tests_suite(void) {
     tcase_add_test(tc_engine, test_engine_on);
     tcase_add_test(tc_engine, test_engine_off_cooling);
     tcase_add_test(tc_engine, test_engine_off_no_cooling);
+    tcase_add_test(tc_engine, test_engine_gear1);
+    tcase_add_test(tc_engine, test_engine_gear2);
+    tcase_add_test(tc_engine, test_engine_gear3);
+    tcase_add_test(tc_engine, test_engine_gear4);
+    tcase_add_test(tc_engine, test_engine_gear5);
     suite_add_tcase(s, tc_engine);
 
     // TCase for cleanup() tests.
@@ -335,6 +506,18 @@ Suite* iec_tests_suite(void) {
     tcase_add_checked_fixture(tc_cleanup, cleanup_setup, cleanup_teardown);
     tcase_add_test(tc_cleanup, test_cleanup);
     suite_add_tcase(s, tc_cleanup);
+
+    tc_error = tcase_create("initializerError");
+    tcase_add_test(tc_error, test_shm_open_fail);
+    tcase_add_test(tc_error, test_mmap_fail);
+    tcase_add_test(tc_error, test_sem_open_fail);
+    tcase_add_test(tc_error, test_mq_open_fail);
+    suite_add_tcase(s, tc_error);
+
+    tc_signal = tcase_create("signal");
+    tcase_add_test(tc_signal, test_pause_signal);
+    tcase_add_test(tc_signal, test_shutdown_signal);
+    suite_add_tcase(s, tc_signal);
 
     return s;
 }

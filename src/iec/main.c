@@ -7,7 +7,7 @@ int main() {
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
-    iec_initializer();
+    int status = iec_initializer();
 
     printf("IEC Module Running\n");
 

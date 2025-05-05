@@ -27,8 +27,11 @@ long delay_ms = 0;
 int transition = 0;
 double expectedvalueEV = 0.0;
 double expectedValueIEC = 0.0;
+unsigned char localcount = 0;
 bool finish = false;
 bool carStop = false;
+bool testing = false;
+bool vmuProduction = true;
 
 bool batteryEmpty = false;
 bool fuelEmpty = false;
@@ -137,10 +140,16 @@ void vmu_initialization () {
         exit(EXIT_FAILURE);
     }
 
-    // Create a separate thread to read user input for pedal control
+    
+    // 4) Thread de input
     if (pthread_create(&input_thread, NULL, read_input, NULL) != 0) {
         perror("[VMU] Error creating input thread");
-        running = 0; // Exit main loop if thread creation fails
+        running = 0;
+    } else {
+        if (vmuProduction) {
+            // Só detach em produção para não poder dar join
+            pthread_detach(input_thread);  // :contentReference[oaicite:0]{index=0}
+        }
     }
 
     system_state->transitionCicles = 0;
@@ -326,6 +335,7 @@ void vmu_control_engines(void) {
         transitionEV  = true;
     }
 
+    atributeBooleanValues(current_speed, current_battery, current_fuel, current_accelerator);
 
     // Gradual transition to IEC mode (combustion only)
     if (iecTransitionActive) {
@@ -496,10 +506,16 @@ void vmu_control_engines(void) {
     }
 
     // Disable Accelerator if fuel is empty and speed above EV speed limit
-    if (fuelEmpty && (current_speed >= MAX_EV_SPEED)) {
+    if (fuelEmpty && (current_speed >= MAX_EV_SPEED - 1.5)) {
         system_state->accelerator = false;
     }
 
+    double rpm_ev = system_state->evPercentage*((system_state->speed * CIRCUNFERENCE_RATIO) / TIRE_PERIMETER);
+
+    if (rpm_ev > MAX_EV_RPM) {
+        system_state->evPercentage  = MAX_EV_RPM / ((current_speed * CIRCUNFERENCE_RATIO) / TIRE_PERIMETER);
+        system_state->iecPercentage = ACT_ALONE - system_state->evPercentage;
+    }
 
     // Assign and send commands
     cmdEV.globalVelocity = current_speed;
@@ -526,7 +542,7 @@ void vmu_control_engines(void) {
 // This function verify if the message received is to VMU and update the system values from EV and IEC
 void vmu_check_queue (unsigned char counter, mqd_t mqd, bool ev) {
     
-    unsigned char localcount = 0;
+    localcount = 0;
     unsigned char ret;
     EngineCommandEV cmdEV;
     EngineCommandIEC cmdIEC;
@@ -553,16 +569,7 @@ void vmu_check_queue (unsigned char counter, mqd_t mqd, bool ev) {
             } 
         }
 
-        if (localcount == 0 && cmdEV.toVMU) {
-            strcpy(lastmsg, "nt");
-            safetyCount++;
-            if (safetyCount == 5) {
-                system_state->safety = true;
-            }
-            
-        }
-        
-        else if (!cmdEV.toVMU) {
+        if (!cmdEV.toVMU) {
             mq_send(mqd, (const char *)&cmdEV, sizeof(cmdEV), 0);
         }
     }
@@ -586,16 +593,7 @@ void vmu_check_queue (unsigned char counter, mqd_t mqd, bool ev) {
             } 
         }
 
-        if (localcount == 0 && cmdIEC.toVMU) {
-            strcpy(lastmsg, "nt");
-            safetyCount++;
-            if (safetyCount == 5) {
-                system_state->safety = true;
-            }
-            
-        }
-
-        else if (!cmdIEC.toVMU) {
+        if (!cmdIEC.toVMU) {
             mq_send(mqd, (const char *)&cmdIEC, sizeof(cmdIEC), 0);
         }
     }
@@ -607,32 +605,44 @@ void vmu_check_queue (unsigned char counter, mqd_t mqd, bool ev) {
 // Function to read user input for pedal control in a separate thread
 void *read_input(void *arg) {
     char input[10];
-    while (running) {
-        fgets(input, sizeof(input), stdin);
-        // Remove trailing newline character from input
-        input[strcspn(input, "\n")] = 0;
 
-        // Process the user input to control acceleration and braking
-        if (strcmp(input, "0") == 0 && !finish) {
-            set_braking(false);
-            set_acceleration(false);
-            sem_wait(sem);
-            system_state->iec_on = false;
-            system_state->ev_on = false;
-            sem_post(sem);
-        } else if (strcmp(input, "1") == 0 && !finish) {
-            set_acceleration(true);
-            set_braking(false);
-        } else if (strcmp(input, "2") == 0 ) {
-            set_acceleration(false);
-            set_braking(true);
-            sem_wait(sem);
-            system_state->iec_on = false;
-            system_state->ev_on = false;
-            sem_post(sem);
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    // 2) Usa cancel type assíncrono ou diferido (getchar() é ponto de cancelamento)
+    pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, NULL);
+
+    char c;                                                
+    ssize_t r;
+
+    if (!testing) {
+        while (running) {
+
+            fgets(input, sizeof(input), stdin);
+            // Remove trailing newline character from input
+            input[strcspn(input, "\n")] = 0;
+
+            // Process the user input to control acceleration and braking
+            if (strcmp(input, "0") == 0 && !finish) {
+                set_braking(false);
+                set_acceleration(false);
+                sem_wait(sem);
+                system_state->iec_on = false;
+                system_state->ev_on = false;
+                sem_post(sem);
+            } else if (strcmp(input, "1") == 0 && !finish) {
+                set_acceleration(true);
+                set_braking(false);
+            } else if (strcmp(input, "2") == 0 ) {
+                set_acceleration(false);
+                set_braking(true);
+                sem_wait(sem);
+                system_state->iec_on = false;
+                system_state->ev_on = false;
+                sem_post(sem);
+            }
+            usleep(10000); // Small delay to avoid busy-waiting
         }
-        usleep(10000); // Small delay to avoid busy-waiting
     }
+
     return NULL;
 }
 

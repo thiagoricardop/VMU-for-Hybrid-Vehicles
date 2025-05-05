@@ -57,46 +57,81 @@ void handle_signal(int sig) {
     }
 }
 
-void iec_initializer() {
 
-    // Configuration of shared memory for IEC
-    int shm_fd = shm_open(SHARED_MEM_NAME, O_RDWR, 0666);
-    if (shm_fd == -1) {
-        perror("[IEC] Error opening shared memory");
-        exit(EXIT_FAILURE);
+int iec_initializer(void)
+{
+    int32_t      shm_fd   = -1;
+    uintptr_t    shm_addr = (uintptr_t)MAP_FAILED;
+    sem_t       *tmp_sem  = SEM_FAILED;
+    mqd_t        tmp_mq   = (mqd_t)-1;
+    int          status   = EXIT_SUCCESS;
+    struct mq_attr attr    = {
+        .mq_flags   = 0U,
+        .mq_maxmsg  = IEC_MQ_MAXMSG,
+        .mq_msgsize = sizeof(EngineCommandIEC),
+        .mq_curmsgs = 0U
+    };
+
+    /* 1) Abrir shared memory */
+    shm_fd = shm_open(SHARED_MEM_NAME,
+                      O_RDWR | O_CREAT,
+                      (mode_t)IEC_SHM_PERMS);
+    if (shm_fd < 0) {
+        status = EXIT_FAILURE;      /* <<< retorna 1, não errno */
+        goto cleanup;
     }
 
-    // Map shared memory into IEC's address space
-    system_state = (SystemState *)mmap(NULL, sizeof(SystemState), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    if (system_state == MAP_FAILED) {
-        perror("[IEC] Error mapping shared memory");
-        exit(EXIT_FAILURE);
-    }
-    close(shm_fd); // Close the file descriptor as the mapping is done
-
-    // Open the semaphore for synchronization (it should already be created by VMU)
-    sem = sem_open(SEMAPHORE_NAME, 0);
-    if (sem == SEM_FAILED) {
-        perror("[IEC] Error opening semaphore");
-        exit(EXIT_FAILURE);
+    /* 2) Mapear */
+    shm_addr = (uintptr_t)mmap(NULL,
+                               (size_t)IEC_SHM_SIZE,
+                               PROT_READ | PROT_WRITE,
+                               MAP_SHARED,
+                               shm_fd,
+                               (off_t)0);
+    if ((void *)shm_addr == MAP_FAILED) {
+        status = EXIT_FAILURE;      /* <<< retorno de falha padronizado */
+        goto cleanup;
     }
 
-    // Configuration of POSIX message queue for receiving commands for the IEC module
-    struct mq_attr iec_mq_attributes;
-    iec_mq_attributes.mq_flags = 0;
-    iec_mq_attributes.mq_maxmsg = 10;
-    iec_mq_attributes.mq_msgsize = sizeof(EngineCommandIEC);
-    iec_mq_attributes.mq_curmsgs = 0;
+    (void)close(shm_fd);
+    shm_fd = -1;
 
-    iec_mq = mq_open(IEC_COMMAND_QUEUE_NAME, O_RDWR | O_CREAT | O_NONBLOCK, 0666, &iec_mq_attributes);
-    if (iec_mq == (mqd_t)-1) {
-        perror("[IEC] Error creating/opening message queue");
-        munmap(system_state, sizeof(SystemState));
-        sem_close(sem);
-        exit(EXIT_FAILURE);
+    /* 3) Abrir semáforo */
+    tmp_sem = sem_open(SEMAPHORE_NAME,
+                       O_CREAT,
+                       (mode_t)IEC_SHM_PERMS,
+                       1U);
+    if (tmp_sem == SEM_FAILED) {
+        status = EXIT_FAILURE;
+        goto cleanup;
     }
 
+    /* 4) Abrir/​criar message queue */
+    tmp_mq = mq_open(IEC_COMMAND_QUEUE_NAME,
+                     O_RDWR | O_CREAT | O_NONBLOCK,
+                     (mode_t)IEC_MQ_PERMS,
+                     &attr);
+    if (tmp_mq == (mqd_t)-1) {
+        status = EXIT_FAILURE;
+        goto cleanup;
+    }
+
+    /* 5) Sucesso: atribui aos globais */
+    system_state = (SystemState *)shm_addr;
+    sem          = tmp_sem;
+    iec_mq       = tmp_mq;
+
+cleanup:
+    if (status != EXIT_SUCCESS) {
+        /* cleanup em caso de falha */
+        if (tmp_mq   != (mqd_t)-1)        (void)mq_close(tmp_mq);
+        if (tmp_sem  != SEM_FAILED)       (void)sem_close(tmp_sem);
+        if ((void *)shm_addr != MAP_FAILED) (void)munmap((void *)shm_addr, (size_t)IEC_SHM_SIZE);
+        if (shm_fd  >= 0)                 (void)close(shm_fd);
+    }
+    return status;
 }
+
 
 EngineCommandIEC iec_receive (EngineCommandIEC cmd) {
     // Receive commands from the VMU through the message queue

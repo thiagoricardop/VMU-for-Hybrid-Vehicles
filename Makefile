@@ -8,12 +8,17 @@ COVERAGE_DIR := coverage
 # — Compiler and flags —
 CC           := gcc
 
-# Coverage flags: generate .gcno beside of .o and emit .gcda at bin diretory
-CFLAGS := -g -O0 -fprofile-arcs -ftest-coverage --coverage 
+# Coverage flags: standard gcov instrumentation
+# -fprofile-arcs -ftest-coverage (--coverage) são necessários para gcov/LCOV :contentReference[oaicite:0]{index=0}
+CFLAGS        := -g -O0 --coverage -fprofile-arcs -ftest-coverage \
+                  -fkeep-inline-functions -fkeep-static-functions
 
+# Add MC/DC instrumentation flag (GCC‑14 patch: -fcondition-coverage) 
+CFLAGS_MCDC   := $(CFLAGS) -fcondition-coverage
 
-CFLAGS_TEST  := $(CFLAGS) -DTESTING 
-LDLIBS       := -lcheck -pthread -lm -lsubunit
+# Flags para testes (link com Check framework, subunit etc.)
+CFLAGS_TEST   := $(CFLAGS_MCDC) -DTESTING
+LDLIBS        := --coverage -lcheck -pthread -lrt -lm -lsubunit -ldl -lgcov
 
 MODULES      := vmu ev iec
 EXECS        := $(addprefix $(BINSRC)/, $(MODULES))
@@ -46,7 +51,7 @@ TEST_OBJS := $(patsubst $(TEST_DIR)/%/test_%.c,$(BINSRC)/test_%.o,$(TEST_SRCS))
 TESTS := $(BINTEST)/test_vmu $(BINTEST)/test_ev $(BINTEST)/test_iec
 
 # — All Makefile commands —
-.PHONY: all test coverage run show clean kill
+.PHONY: all test coverage run show clean kill mcdc
 .SECONDARY: $(BINSRC)/%.o
 
 # — Standard target: compile project —
@@ -115,46 +120,56 @@ test: $(TESTS)
 LCOV_GCOV_TOOL := gcov-14
 
 # — Coverage report —
-coverage: clean all test
-	# 1) Zera contadores
-	lcov --zerocounters --directory bin/ \
-	     --rc lcov_branch_coverage=1
+coverage:
+	@echo ">>> Limpando e compilando com MC/DC…"
+	@$(MAKE) clean
+	@$(MAKE) CFLAGS="$(CFLAGS_MCDC)" all test
 
-	# 2) Captura baseline estático (.gcno)
+	@echo ">>> Zerando contadores…"
+	lcov --zerocounters --directory bin/ \
+	     --rc branch_coverage=1 \
+	     --rc mcdc_coverage=1
+
+	@echo ">>> Capturando baseline (.gcno)…"
 	lcov --capture --initial \
 	     --gcov-tool gcov-14 \
 	     --directory bin/ \
 	     --output-file coverage_base.info \
-	     --rc lcov_branch_coverage=1
+	     --rc branch_coverage=1 \
+	     --rc mcdc_coverage=1
 
-	# 3) Executa testes (.gcda)
+	@echo ">>> Executando testes para gerar .gcda…"
 	for t in bin/test/*; do ./$$t; done
 
-	# 4) Captura cobertura dinâmica (.gcda)
+	@echo ">>> Capturando cobertura de teste (.gcda)…"
 	lcov --capture \
 	     --gcov-tool gcov-14 \
 	     --directory bin/ \
 	     --output-file coverage_test.info \
-	     --rc lcov_branch_coverage=1
+	     --rc branch_coverage=1 \
+	     --rc mcdc_coverage=1
 
-	# 5) Mescla baseline + teste
+	@echo ">>> Mesclando baseline + teste…"
 	lcov -a coverage_base.info \
 	     -a coverage_test.info \
 	     -o coverage.info \
-	     --rc lcov_branch_coverage=1
+	     --rc branch_coverage=1 \
+	     --rc mcdc_coverage=1
 
-	# 6) Filtra arquivos irrelevantes
+	@echo ">>> Filtrando arquivos irrelevantes…"
 	lcov --remove coverage.info '/usr/*' '*/test_*' \
 	     --output-file coverage_filtered.info \
-	     --rc lcov_branch_coverage=1
+	     --rc branch_coverage=1 \
+	     --rc mcdc_coverage=1
 
-	# 7) Gera relatório HTML com cobertura de ramos
+	@echo ">>> Gerando relatório HTML com MC/DC…"
 	genhtml coverage_filtered.info \
 	        --branch-coverage \
-	        --output-directory coverage_html \
-	        --rc genhtml_branch_coverage=1
+	        --mcdc-coverage \
+	        --output-directory coverage_html
 
-	@echo "Relatório disponível em coverage_html/index.html"
+	@echo "Relatório disponível em coverage_html/index.html"	        
+
 
 # — Run aplication at tmux —
 run: all
