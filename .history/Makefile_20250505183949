@@ -185,13 +185,10 @@ show:
 
 # — Clean executable objects —
 clean:
-	
-	rm -rf $(BINSRC) $(BINTEST) bin coverage_html
-	rm -f coverage.info \
-	      coverage_base.info \
-	      coverage_filtered.info \
-	      coverage_test.info \
-	      out.txt
+	rm -rf $(BINSRC) $(BINTEST) $(COVERAGE_DIR) coverage.info
+	find . -name "*.gcda" -delete
+	find . -name "*.gcno" -delete
+	find . -name "*.o" -delete
 
 # — End tmux session —
 kill:

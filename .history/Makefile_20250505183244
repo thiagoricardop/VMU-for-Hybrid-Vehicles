@@ -185,13 +185,10 @@ show:
 
 # — Clean executable objects —
 clean:
-	
-	rm -rf $(BINSRC) $(BINTEST) bin coverage_html
-	rm -f coverage.info \
-	      coverage_base.info \
-	      coverage_filtered.info \
-	      coverage_test.info \
-	      out.txt
+	rm -rf $(BINSRC) $(BINTEST) $(COVERAGE_DIR) coverage.info
+	find . -name "*.gcda" -delete
+	find . -name "*.gcno" -delete
+	find . -name "*.o" -delete
 
 # — End tmux session —
 kill:
@@ -202,12 +199,10 @@ DOCKER_IMAGE   := vmu_controller
 DOCKER_CONTAINER := vmu_controller_container
 
 .PHONY: docker-build
-
 docker-build:
 	docker build -t $(DOCKER_IMAGE) .
 
 .PHONY: docker-run
-
 docker-run: docker-build
 	# Remove container antigo, se existir
 	-docker rm -f $(DOCKER_CONTAINER)
@@ -219,7 +214,6 @@ docker-run: docker-build
 	  -it $(DOCKER_IMAGE)
 
 .PHONY: docker-clean
-
 docker-clean:
 	# Remove container parado
 	-docker rm -f $(DOCKER_CONTAINER)

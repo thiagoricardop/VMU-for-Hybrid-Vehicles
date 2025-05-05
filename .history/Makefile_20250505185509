@@ -185,8 +185,10 @@ show:
 
 # — Clean executable objects —
 clean:
-	
+	# Remove diretórios binários e de cobertura
 	rm -rf $(BINSRC) $(BINTEST) bin coverage_html
+
+	# Remove arquivos de cobertura e logs
 	rm -f coverage.info \
 	      coverage_base.info \
 	      coverage_filtered.info \

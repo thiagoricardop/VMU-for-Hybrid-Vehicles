@@ -1,0 +1,197 @@
+# ————————————————————————
+
+# | Docker environment setup |
+
+# ————————————————————————
+
+# Nome da imagem Docker
+
+IMAGE\_NAME    := vmu-env\:latest
+
+# Bind‑mount do diretório atual para /app no container, usando shell pwd
+
+DOCKER\_VOLUME := -v \$(shell pwd):/app
+
+# Comando genérico de run não‑interativo dentro do container
+
+DOCKER\_RUN    := docker run --rm \$(DOCKER\_VOLUME) -w /app \$(IMAGE\_NAME)
+
+# Comando genérico de run interativo (shell) dentro do container
+
+DOCKER\_SHELL  := docker run --rm -it \$(DOCKER\_VOLUME) -w /app \$(IMAGE\_NAME)
+
+# Alvos Docker
+
+.PHONY: docker-build docker-shell docker-all docker-test docker-coverage docker-run
+
+docker-build:
+docker build -t \$(IMAGE\_NAME) .
+
+docker-shell: docker-build
+\$(DOCKER\_SHELL) bash
+
+docker-all: docker-build
+\$(DOCKER\_RUN) make all
+
+docker-test: docker-build
+\$(DOCKER\_RUN) make test
+
+docker-coverage: docker-build
+\$(DOCKER\_RUN) make coverage
+
+docker-run: docker-build
+\$(DOCKER\_RUN) make run
+
+# — Diretories —
+
+SRC\_DIR      := src
+TEST\_DIR     := test
+BINSRC       := bin
+BINTEST      := \$(BINSRC)/test
+COVERAGE\_DIR := coverage
+
+# — Compiler and flags —
+
+CC           := gcc
+
+# Coverage flags: standard gcov instrumentation
+
+CFLAGS        := -g -O0 --coverage -fprofile-arcs -ftest-coverage&#x20;
+-fkeep-inline-functions -fkeep-static-functions
+CFLAGS\_MCDC   := \$(CFLAGS) -fcondition-coverage
+CFLAGS\_TEST   := \$(CFLAGS\_MCDC) -DTESTING
+LDLIBS        := --coverage -lcheck -pthread -lrt -lm -lsubunit -ldl -lgcov
+
+MODULES      := vmu ev iec
+EXECS        := \$(addprefix \$(BINSRC)/, \$(MODULES))
+TMUX\_SESSION := sistema
+
+# — Source files and objects for each module —
+
+VMU\_SRCS := \$(filter-out src/vmu/main.c,\$(wildcard src/vmu/\*.c))
+VMU\_OBJS := \$(patsubst src/vmu/%.c,\$(BINSRC)/%.o,\$(VMU\_SRCS))
+VMU\_MAIN := \$(BINSRC)/main\_vmu.o
+VMU\_APP  := \$(VMU\_OBJS) \$(VMU\_MAIN)
+
+EV\_SRCS := \$(filter-out src/ev/main.c,\$(wildcard src/ev/\*.c))
+EV\_OBJS := \$(patsubst src/ev/%.c,\$(BINSRC)/%.o,\$(EV\_SRCS))
+EV\_MAIN := \$(BINSRC)/main\_ev.o
+EV\_APP  := \$(EV\_OBJS) \$(EV\_MAIN)
+
+IEC\_SRCS := \$(filter-out src/iec/main.c,\$(wildcard src/iec/\*.c))
+IEC\_OBJS := \$(patsubst src/iec/%.c,\$(BINSRC)/%.o,\$(IEC\_SRCS))
+IEC\_MAIN := \$(BINSRC)/main\_iec.o
+IEC\_APP  := \$(IEC\_OBJS) \$(IEC\_MAIN)
+
+TEST\_SRCS := \$(wildcard \$(TEST\_DIR)/vmu/test\_vmu.c&#x20;
+\$(TEST\_DIR)/ev/test\_ev.c&#x20;
+\$(TEST\_DIR)/iec/test\_iec.c)
+TEST\_OBJS := \$(patsubst \$(TEST\_DIR)/%/test\_%.c,\$(BINSRC)/test\_%.o,\$(TEST\_SRCS))
+TESTS     := \$(BINTEST)/test\_vmu \$(BINTEST)/test\_ev \$(BINTEST)/test\_iec
+
+# — All Makefile commands —
+
+.PHONY: all test coverage run show clean kill mcdc
+.SECONDARY: \$(BINSRC)/%.o
+
+# — Standard target: compile project —
+
+all: \$(EXECS)
+
+# — Create bin directory if necessary —
+
+\$(BINSRC):
+mkdir -p \$@
+
+\$(BINTEST): | \$(BINSRC)
+mkdir -p \$@
+
+# — Compilation rules for each module —
+
+\$(BINSRC)/%.o: src/vmu/%.c | \$(BINSRC)
+\$(CC) \$(CFLAGS) -c \$< -o \$@
+\$(BINSRC)/%.o: src/ev/%.c | \$(BINSRC)
+\$(CC) \$(CFLAGS) -c \$< -o \$@
+\$(BINSRC)/%.o: src/iec/%.c | \$(BINSRC)
+\$(CC) \$(CFLAGS) -c \$< -o \$@
+
+# — Compile main of each module —
+
+\$(BINSRC)/main\_%.o: src/%/main.c | \$(BINSRC)
+\$(CC) \$(CFLAGS) -c \$< -o \$@
+
+# — Link executables —
+
+\$(BINSRC)/vmu: \$(VMU\_APP)
+\$(CC) \$^ -o \$@ \$(CFLAGS) \$(LDLIBS)
+\$(BINSRC)/ev:  \$(EV\_APP)
+\$(CC) \$^ -o \$@ \$(CFLAGS) \$(LDLIBS)
+\$(BINSRC)/iec: \$(IEC\_APP)
+\$(CC) \$^ -o \$@ \$(CFLAGS) \$(LDLIBS)
+
+# — Test object rules —
+
+\$(BINSRC)/test\_vmu.o: \$(TEST\_DIR)/vmu/test\_vmu.c | \$(BINSRC)
+\$(CC) \$(CFLAGS\_TEST) -c \$< -o \$@
+\$(BINSRC)/test\_ev.o:  \$(TEST\_DIR)/ev/test\_ev.c | \$(BINSRC)
+\$(CC) \$(CFLAGS\_TEST) -c \$< -o \$@
+\$(BINSRC)/test\_iec.o: \$(TEST\_DIR)/iec/test\_iec.c | \$(BINSRC)
+\$(CC) \$(CFLAGS\_TEST) -c \$< -o \$@
+
+# — Link tests —
+
+\$(BINTEST)/test\_vmu: \$(BINSRC)/test\_vmu.o \$(VMU\_OBJS) | \$(BINTEST)
+\$(CC) \$^ -o \$@ \$(CFLAGS\_TEST) \$(LDLIBS)
+\$(BINTEST)/test\_ev:  \$(BINSRC)/test\_ev.o  \$(EV\_OBJS) | \$(BINTEST)
+\$(CC) \$^ -o \$@ \$(CFLAGS\_TEST) \$(LDLIBS)
+\$(BINTEST)/test\_iec: \$(BINSRC)/test\_iec.o \$(IEC\_OBJS) | \$(BINTEST)
+\$(CC) \$^ -o \$@ \$(CFLAGS\_TEST) \$(LDLIBS)
+
+# — Run tests —
+
+test: \$(TESTS)
+@echo "Running tests..."
+@for t in \$^; do ./\$\$t; done
+
+# — Coverage report —
+
+coverage:
+@echo "Generating coverage..."
+@\$(MAKE) clean
+@\$(MAKE) CFLAGS="\$(CFLAGS\_MCDC)" all test
+lcov --zerocounters --directory bin/ --rc branch\_coverage=1 --rc mcdc\_coverage=1
+lcov --capture --initial --gcov-tool gcov-14 --directory bin/ --output-file coverage\_base.info --rc branch\_coverage=1 --rc mcdc\_coverage=1
+for t in bin/test/*; do \$\$t; done
+lcov --capture --gcov-tool gcov-14 --directory bin/ --output-file coverage\_test.info --rc branch\_coverage=1 --rc mcdc\_coverage=1
+lcov -a coverage\_base.info -a coverage\_test.info -o coverage.info --rc branch\_coverage=1 --rc mcdc\_coverage=1
+lcov --remove coverage.info '/usr/*' '*/test\_*' --output-file coverage\_filtered.info --rc branch\_coverage=1 --rc mcdc\_coverage=1
+genhtml coverage\_filtered.info --branch-coverage --mcdc-coverage --output-directory coverage\_html
+@echo "Report in coverage\_html/index.html"
+
+# — Run application at tmux —
+
+run: all
+@tmux new-session -d -s \$(TMUX\_SESSION) -n vmu './\$(BINSRC)/vmu'&#x20;
+&& tmux split-window -v './\$(BINSRC)/ev'&#x20;
+&& tmux split-window -h './\$(BINSRC)/iec'&#x20;
+&& tmux select-layout tiled&#x20;
+&& tmux attach
+
+# — Open coverage report —
+
+show:
+xdg-open \$(COVERAGE\_DIR)/index.html || echo "Falha ao abrir"
+
+# — Clean —
+
+clean:
+rm -rf \$(BINSRC) \$(BINTEST) \$(COVERAGE\_DIR) coverage.info
+find . -name "*.gcda" -delete
+find . -name "*.gcno" -delete
+find . -name "\*.o" -delete
+
+# — Kill tmux session —
+
+kill:
+@tmux kill-session -t \$(TMUX\_SESSION) || echo "No tmux session"
+
