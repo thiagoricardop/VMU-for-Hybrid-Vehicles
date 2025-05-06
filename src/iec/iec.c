@@ -21,7 +21,6 @@ mqd_t iec_mq_receive;      // Message queue descriptor for receiving commands fo
 volatile sig_atomic_t running = 1; // Flag to control the main loop, volatile to ensure visibility across threads
 volatile sig_atomic_t paused = 0;  // Flag to indicate if the simulation is paused
 int shm_fd = -1;
-// EngineCommand cmd; // No need for a global command struct if processed immediately
 
 // Function to handle signals (SIGUSR1 for pause, SIGINT/SIGTERM for shutdown)
 void handle_signal(int sig) {
@@ -41,7 +40,7 @@ int init_communication_iec(char * shared_mem_name, char * semaphore_name, char *
     signal(SIGINT, handle_signal);
     signal(SIGTERM, handle_signal);
 
-    // Configuration of shared memory for IEC (Open read-write to update state)
+    // Configuration of shared memory for IEC
     shm_fd = shm_open(shared_mem_name, O_RDWR, 0666);
     if (shm_fd == -1) {
         perror("[IEC] Error opening shared memory");
@@ -52,37 +51,34 @@ int init_communication_iec(char * shared_mem_name, char * semaphore_name, char *
     system_state = (SystemState *)mmap(NULL, sizeof(SystemState), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (system_state == MAP_FAILED) {
         perror("[IEC] Error mapping shared memory");
-        close(shm_fd); // Close file descriptor before exiting
+        close(shm_fd); 
         return 0;
     }
-    close(shm_fd); // Close the file descriptor as the mapping is done
+    close(shm_fd); 
 
-    // Open the semaphore for synchronization (it should already be created by VMU)
-    sem = sem_open(semaphore_name, 0); // 0 flag means don't create, just open
+   
+    sem = sem_open(semaphore_name, 0); 
     if (sem == SEM_FAILED) {
         perror("[IEC] Error opening semaphore");
         // Clean up shared memory before exiting
         munmap(system_state, sizeof(SystemState));
-        return 0; // Exit, VMU will handle unlinking
+        return 0; // Exit
     }
 
     // Configuration of POSIX message queue for receiving commands for the IEC module
     struct mq_attr iec_mq_attributes;
-    iec_mq_attributes.mq_flags = 0; // Flags will be set by mq_open
-    iec_mq_attributes.mq_maxmsg = 10; // Max messages in queue
-    iec_mq_attributes.mq_msgsize = sizeof(EngineCommand); // Max message size
-    iec_mq_attributes.mq_curmsgs = 0; // Current messages (ignored for open)
+    iec_mq_attributes.mq_flags = 0; 
+    iec_mq_attributes.mq_maxmsg = 10; 
+    iec_mq_attributes.mq_msgsize = sizeof(EngineCommand); 
+    iec_mq_attributes.mq_curmsgs = 0; 
 
      // Open message queue read-only, non-blocking. Use O_CREAT in case VMU fails to create it.
-    // Note: O_CREAT here is generally less safe if VMU *isn't* the creator and cleanup is complex.
-    // Prefer VMU to create/unlink, and modules just open. But keeping O_CREAT for robustness.
     iec_mq_receive = mq_open(iec_queue_name, O_RDONLY | O_CREAT | O_NONBLOCK, 0666, &iec_mq_attributes);
     if (iec_mq_receive == (mqd_t)-1) {
         perror("[IEC] Error creating/opening message queue");
         // Clean up shared memory and semaphore before exiting
         munmap(system_state, sizeof(SystemState));
         sem_close(sem);
-        // No need to unlink semaphore or shm here, VMU does that
         return 0;
     }
 
@@ -113,7 +109,6 @@ void receive_cmd() {
             case CMD_SET_POWER:
                 // The VMU updates system_state->iec_power_level *before* sending this message.
                 // We just need to receive the message. The engine() loop will use the value from shared memory.
-                // printf("[IEC] Received SET_POWER command (level: %.2f)\n", received_cmd.power_level); // Optional print
                 break;
             case CMD_END:
                 running = 0; // Terminate the main loop
@@ -125,18 +120,15 @@ void receive_cmd() {
         }
         sem_post(sem); // Release the semaphore
     }
-    // No sleep here, the main loop will handle the tick rate
 }
 
-// Função engine otimizada
+// Function to handle the engine logic
 void engine() {
-    // Variáveis locais para armazenar valores do estado compartilhado
     bool engine_on;
     int current_rpm;
     double power_level;
     double current_temp;
     
-    // Leitura dos valores necessários com o semáforo
     sem_wait(sem);
     engine_on = system_state->iec_on;
     current_rpm = system_state->rpm_iec;
@@ -144,15 +136,14 @@ void engine() {
     current_temp = system_state->temp_iec;
     sem_post(sem);
     
-    // Cálculos realizados fora da seção crítica
     int new_rpm = current_rpm;
     double new_temp = current_temp;
     
     if (engine_on) {
-        // Calcular RPM alvo com base no nível de potência comandado
+
         int target_rpm = IEC_IDLE_RPM + (int)(power_level * (MAX_IEC_RPM - IEC_IDLE_RPM));
         
-        // Transição suave de RPM
+        // Smoothly transition RPM
         if (current_rpm < target_rpm) {
             new_rpm += (int)((MAX_IEC_RPM - IEC_IDLE_RPM) * POWER_INCREASE_RATE * 0.8);
             if (new_rpm > target_rpm) new_rpm = target_rpm;
@@ -161,31 +152,31 @@ void engine() {
             if (new_rpm < target_rpm) new_rpm = target_rpm;
         }
         
-        // Garantir RPM mínimo é IEC_IDLE_RPM se o motor estiver ligado
+        // Ensure RPM does not drop below idle when engine is on
         if (engine_on && new_rpm < IEC_IDLE_RPM) {
             new_rpm = IEC_IDLE_RPM;
         }
         
-        // Aumentar temperatura com base no nível de potência
+        // Increase temperature based on RPM
         new_temp += new_rpm * 0.001 * IEC_TEMP_INCREASE_RATE;
-        if (new_temp > 105.0) new_temp = 105.0; // Temperatura máxima
+        if (new_temp > MAX_IEC_TEMP) new_temp = MAX_IEC_TEMP;
     } else {
         int target_rpm = (int)(power_level * (MAX_IEC_RPM - IEC_IDLE_RPM));
         
-        // Transição suave de RPM
+        // Smoothly transition RPM
         if (current_rpm > target_rpm) {
             new_rpm -= (int)((MAX_IEC_RPM - IEC_IDLE_RPM) * POWER_DECREASE_RATE * 0.7);
             if (new_rpm < target_rpm) new_rpm = target_rpm;
         }
         
-        // Resfriar o motor se estiver acima da temperatura ambiente
+        // Ensure RPM does not drop below idle when engine is off
         if (current_temp > 25.0) {
             new_temp -= IEC_TEMP_DECREASE_RATE;
             if (new_temp < 25.0) new_temp = 25.0;
         }
     }
     
-    // Atualizar o estado compartilhado apenas uma vez, com o semáforo
+    
     sem_wait(sem);
     system_state->rpm_iec = new_rpm;
     system_state->temp_iec = new_temp;
@@ -195,18 +186,15 @@ void engine() {
 // Function to cleanup resources before exiting
 void cleanup() {
     // Cleanup resources before exiting
-     // Ensure shared state reflects IEC is off and RPM is 0 on shutdown
+    // Ensure shared state reflects IEC is off and RPM is 0 on shutdown
     sem_wait(sem);
     system_state->iec_on = false;
     system_state->rpm_iec = 0;
     sem_post(sem);
 
     if (iec_mq_receive != (mqd_t)-1) mq_close(iec_mq_receive);
-     // No need to unlink queue, VMU does that
     if (system_state != MAP_FAILED) munmap(system_state, sizeof(SystemState));
-     // No need to unlink shm, VMU does that
     if (sem != SEM_FAILED) sem_close(sem);
-     // No need to unlink sem, VMU does that
 
     printf("[IEC] Shut down complete.\n");
 }

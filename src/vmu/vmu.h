@@ -13,14 +13,14 @@
 #define SEMAPHORE_NAME "/hybrid_car_semaphore"
 #define EV_COMMAND_QUEUE_NAME "/ev_command_queue"
 #define IEC_COMMAND_QUEUE_NAME "/iec_command_queue"
-#define UPDATE_INTERVAL 1
 
 // Constants
 #define MAX_SPEED 160.0         // Maximum vehicle speed (km/h)
 #define MIN_SPEED 0.0           // Minimum vehicle speed (km/h)
 #define MAX_BATTERY 100.0       // Maximum battery charge (%)
 #define MAX_FUEL 100.0          // Maximum fuel level (%)
-#define MAX_IEC_TEMP 105
+#define MAX_IEC_TEMP 105.0        // Maximum temperature for IEC engine (C)
+#define MAX_EV_TEMP 90.0          // Maximum temperature for EV motor (C)
 
 // Hybrid Logic Constants
 #define EV_ONLY_SPEED_LIMIT 60.0 // Max speed when on EV only due to low fuel
@@ -42,26 +42,15 @@
 #define REGEN_BRAKE_RATE            0.02    // Battery regen rate during braking
 #define IEC_RECHARGE_RATE           0.002   // Battery recharge rate when IEC is running (e.g., charging battery)
 
-
-#define ENGINE_BRAKE_EV_FACTOR     2.0   // Electric motor resistance when not powered
-#define ENGINE_BRAKE_IEC_FACTOR    6.0   // ICE engine braking force factor
-#define DRIVETRAIN_LOSS_FACTOR     0.15  // Power loss in drivetrain at max speed (15%)
 #define SPEED_CHANGE_SMOOTHING     0.5  // Smoothing factor for speed changes (0-1)
 
 // Vehicle Dynamics and Engine Torque Curve Constants (Simplified)
 #define EV_BASE_RPM             2000    // RPM where EV transitions from constant torque to constant power
 #define MAX_EV_RPM              10000    // Maximum RPM for EV
-#define MAX_EV_TORQUE_NM        350.0   // Maximum torque of the EV motor (Nm)
-#define MAX_EV_POWER_KW         (MAX_EV_TORQUE_NM * 1000) // Calculate max EV power
 
 #define IEC_IDLE_RPM            800     // Idle RPM for IEC
-#define IEC_TORQUE_AT_IDLE_NM   50.0    // Small torque at idle if engine is on (Nm)
-#define IEC_PEAK_TORQUE_RPM     3500    // RPM where IEC torque peaks
-#define MAX_IEC_TORQUE_NM       250.0   // Maximum torque of the IEC engine (Nm)
 #define MAX_IEC_RPM             6000    // Maximum RPM for IEC
 
-// Other constants
-#define PI 3.141592653589              // Pi constant
 
 // Structure for system state
 typedef struct {
@@ -79,7 +68,7 @@ typedef struct {
     int power_mode; // 0: Hybrid, 1: Electric Only, 2: Combustion Only, 3: Regenerative Braking, 4: Parked
     double ev_power_level; // Commanded power level for EV (0.0 to 1.0)
     double iec_power_level; // Commanded power level for IEC (0.0 to 1.0)
-    bool was_accelerating;
+    bool was_accelerating; // Tracks if accelerator was pressed in the previous cycle
 } SystemState;
 
 // Structure for messages (if needed for communication beyond commands)
@@ -97,7 +86,7 @@ typedef enum {
     CMD_UNKNOWN
 } CommandType;
 
-// Structure for engine commands
+// Structure for engine commands sent via message queues
 typedef struct {
     CommandType type;
     double power_level;
@@ -120,5 +109,7 @@ extern SystemState *system_state;
 extern sem_t *sem;
 extern mqd_t ev_mq;
 extern mqd_t iec_mq;
+extern volatile sig_atomic_t running; // Main loop control flag
+extern volatile sig_atomic_t paused;  // Pause control flag
 
 #endif

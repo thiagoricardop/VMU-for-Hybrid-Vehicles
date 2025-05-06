@@ -15,17 +15,16 @@
 #include "vmu.h"
 
 /*
-To use the VMU, you need first to make the executable files using `make` on VMU-FOR-HYBRID-VEHICLES/src terminal. After that, run each file in a different terminal, starting by ./vmu, then the ./ev and ./iec.
-The vmu.c is the main module that controls the vehicle's powertrain, while the ev.c and iec.c are the electric and internal combustion engine modules, respectively.
-The VMU communicates with the EV and IEC modules through POSIX message queues, and controls the engines based on the current speed and user input.
-*/
+VMU (Vehicle Management Unit) - Main control system for the hybrid vehicle.
+Communicates with EV and IEC modules via POSIX message queues and shared memory.
+Controls engine states based on speed, user input, battery, and fuel levels.
 
-/*
-After running all executables in different terminals, go to the vmu terminal, press `1` to accelerate and press `enter`.
-*/
-
-/*
-To shut down the system, press `Ctrl+C` on vmu terminal.
+Usage:
+1. Build docker image using `make docker` in VMU-FOR-HYBRID-VEHICLES.
+1. Build executables using `docker run --rm -it -v $(pwd):/app vmu-dev make` in VMU-FOR-HYBRID-VEHICLES.
+2. Run the executables using tmux with 'make run' in VMU-FOR-HYBRID-VEHICLES.
+3. In VMU terminal: '1' to accelerate, '2' to brake, '0' to coast.
+4. Press Ctrl+C in VMU terminal to shut down.
 */
 
 // Global variables
@@ -48,7 +47,7 @@ void handle_signal(int sig) {
     }
 }
 
-// Function to display the current state of the system
+// Displays the current system state to the console
 void display_status(const SystemState *state) {
     printf("\033[H"); // ANSI escape code to move cursor to top-left
     printf("\n\n=== System State ===                \n");
@@ -67,13 +66,13 @@ void display_status(const SystemState *state) {
         state->power_mode == 0 ? "Electric Only        " : 
         state->power_mode == 1 ? "Hybrid               " : 
         state->power_mode == 2 ? "Combustion Only      " : 
-        state->power_mode == 3 ? "Regenerative Braking " : "Parked              ");
-
+        state->power_mode == 3 ? "Regenerative Braking " :
+        state->power_mode == 5 ? "IEC Charging/Idle    " : "Parked/Coasting      ");
     printf("Accelerator: %s               \n", state->accelerator ? "ON " : "OFF");
     printf("Brake: %s                     \n", state->brake ? "ON " : "OFF");
     printf("\nType `1` for accelerate, `2` for brake, or `0` for none, and press Enter:\n");
 
-    fflush(stdout); // Ensure output is flushed immediately
+    fflush(stdout); // Ensure output is displayed immediately
 }
 
 // Function to initialize the system state
@@ -95,30 +94,30 @@ void init_system_state(SystemState *state) {
     state->was_accelerating = false;
 }
 
-// Function to set the accelerator state
+// Sets the accelerator state in shared memory (thread-safe)
 void set_acceleration(bool accelerate) {
-    sem_wait(sem); // Acquire the semaphore to protect shared memory
+    sem_wait(sem);
     system_state->accelerator = accelerate;
     if (accelerate) {
-        system_state->brake = false; // If accelerating, brake is off
+        system_state->brake = false; // Ensure brake is off if accelerating
     }
-    sem_post(sem); // Release the semaphore
+    sem_post(sem);
 }
 
-// Function to set the braking state
+// Sets the braking state in shared memory (thread-safe)
 void set_braking(bool brake) {
-    sem_wait(sem); // Acquire the semaphore
+    sem_wait(sem);
     system_state->brake = brake;
     if (brake) {
-        system_state->accelerator = false; // If braking, accelerator is off
-        
-        // Engines will fully stop when their RPM/power reaches zero in their modules
+        system_state->accelerator = false; // Ensure accelerator is off if braking
     }
-    sem_post(sem); // Release the semaphore
+    sem_post(sem);
 }
 
+// Calculates the vehicle speed based on current state and commanded power
+// Note: This is a simplified physics model.
 double calculate_speed(SystemState *state) {
-    // Cache needed values to minimize semaphore lock time
+    // Cache needed values locally to minimize semaphore lock time
     double current_speed_kmh;
     bool is_accelerating, is_braking;
     double ev_power_level, iec_power_level;
@@ -134,7 +133,6 @@ double calculate_speed(SystemState *state) {
     iec_on = state->iec_on;
     sem_post(sem);
 
-    // Calculate speed change based on simple linear model
     double speed_change = 0.0;
 
     if (is_accelerating) {
@@ -212,37 +210,38 @@ double calculate_speed(SystemState *state) {
 
 }
 
-// Modificação na função vmu_control_engines para minimizar o tempo de bloqueio
+
+// Main logic for controlling EV and IEC based on system state
 void vmu_control_engines() {
-    // Variáveis locais para armazenar os valores do estado compartilhado lido
+    // Local variables to store shared state values
     double current_speed;
     double current_battery;
     double current_fuel;
     bool current_accelerator;
     bool current_brake;
-    bool current_ev_on;  // Actual state of EV motor reported by EV module
-    bool current_iec_on; // Actual state of IEC motor reported by IEC module
-    double current_ev_power_level; // Current commanded power level (read from shared state)
-    double current_iec_power_level; // Current commanded power level (read from shared state)
+    bool current_ev_on;
+    bool current_iec_on;
+    double current_ev_power_level;
+    double current_iec_power_level;
     bool was_accelerating;
-    int power_mode; // Current power mode
+    int power_mode;
 
-    // Leitura inicial dos valores necessários do estado compartilhado
+    // Initial reading of necessary values from shared state
     sem_wait(sem);
     current_speed = system_state->speed;
     current_battery = system_state->battery;
     current_fuel = system_state->fuel;
     current_accelerator = system_state->accelerator;
     current_brake = system_state->brake;
-    current_ev_on = system_state->ev_on;  // Get actual state from shared memory (updated by modules)
-    current_iec_on = system_state->iec_on; // Get actual state from shared memory (updated by modules)
-    current_ev_power_level = system_state->ev_power_level; // Get current commanded power level
-    current_iec_power_level = system_state->iec_power_level; // Get current commanded power level
+    current_ev_on = system_state->ev_on; 
+    current_iec_on = system_state->iec_on;
+    current_ev_power_level = system_state->ev_power_level; 
+    current_iec_power_level = system_state->iec_power_level; 
     was_accelerating = system_state->was_accelerating;
-    power_mode = system_state->power_mode; // Although updated by VMU, read the current value
+    power_mode = system_state->power_mode; 
     sem_post(sem);
 
-    // Variáveis locais para o estado desejado e calculado para este ciclo
+    
     double target_ev_power = 0.0;
     double target_iec_power = 0.0;
     bool battery_ok = (current_battery > BATTERY_CRITICAL_THRESHOLD);
@@ -267,13 +266,13 @@ void vmu_control_engines() {
 
     // --- VMU Logic to Determine Desired State and Target Power ---
     if (current_accelerator) {
-        // Aceleração
+        
         new_was_accelerating = true;
 
         if (battery_ok && fuel_ok) {
-            // Modo Normal (EV Only or Hybrid)
+            // Common mode (EV Only or Hybrid)
             if (current_speed < ELECTRIC_ONLY_SPEED_THRESHOLD) {
-                // Modo apenas elétrico (< 40 km/h)
+                // (< 40 km/h)
                 new_power_mode = 0; // EV Only Mode
                 desired_iec_on = false;
                 target_iec_power = 0.0;
@@ -283,7 +282,7 @@ void vmu_control_engines() {
                 target_ev_power = fmin(fmax(target_ev_power, 0.0), 1.0);
 
             } else {
-                // Modo híbrido (>= 40 km/h)
+                // (>= 40 km/h)
                 new_power_mode = 1; // Hybrid Mode
                 desired_ev_on = true;
                 target_ev_power = 1.0; // EV provides full power in hybrid acceleration
@@ -294,7 +293,7 @@ void vmu_control_engines() {
                 target_iec_power = fmin(fmax(target_iec_power, 0.0), 1.0);
             }
         } else if (!battery_ok && fuel_ok) {
-            // Modo Apenas IEC (Bateria baixa, Combustível ok) - Carrega bateria
+            
              new_power_mode = 2; // IEC Only mode
              desired_ev_on = false; // Ensure EV motor is off
              target_ev_power = 0.0; // Ensure EV power is zero
@@ -309,7 +308,6 @@ void vmu_control_engines() {
              // in the next cycle when battery_ok becomes true.
 
         } else if (battery_ok && !fuel_ok) {
-            // Modo Apenas EV (Bateria ok, Combustível baixo) - Velocidade limitada
             new_power_mode = 0; // EV Only mode
             desired_iec_on = false; // Ensure IEC motor is off
             target_iec_power = 0.0; // Ensure IEC power is zero
@@ -325,7 +323,6 @@ void vmu_control_engines() {
             }
 
         } else {
-            // Modo emergência: Bateria e combustível baixos -> Não é possível acelerar
             new_power_mode = 4; // Emergency/No propulsion
             desired_ev_on = false;
             desired_iec_on = false;
@@ -347,7 +344,7 @@ void vmu_control_engines() {
         }
 
 
-    } else { // Não está acelerando (Coast, Brake, Idle)
+    } else { // Not accelerating
         new_was_accelerating = false;
         target_ev_power = 0.0; // Target is zero when not accelerating
         target_iec_power = 0.0; // Target is zero when not accelerating (except for charging)
@@ -382,42 +379,35 @@ void vmu_control_engines() {
         // Regenerative braking logic determines power mode, but doesn't necessarily keep EV motor 'on' for propulsion
         if (current_brake && current_speed > MIN_SPEED) {
             new_power_mode = 3; // Regenerative Braking mode
-            // The EV module handles regen when braking and it's capable.
-            // We don't necessarily need to keep desired_ev_on true here unless the EV module requires being 'on' for regen.
-            // Assuming the EV module handles regen internally when braking is detected and it's in a state to do so.
-            // The VMU's role is to calculate the battery increase due to regen.
              desired_ev_on = false; // VMU is not requesting EV propulsion
              desired_iec_on = false; // IEC is off during regen braking
         } else if (current_speed > MIN_SPEED) {
              // Coasting modes - Engines should ideally be off unless needed for charging
              desired_ev_on = false; // Not requesting EV propulsion while coasting
-             // desired_iec_on is already handled by keep_iec_for_charge logic
         } else { // Vehicle is stopped or near stopped
-             // If IEC was on for charging, keep it on, otherwise turn off
-             // desired_iec_on is already handled by keep_iec_for_charge logic
              desired_ev_on = false; // EV is off when stopped and not accelerating/braking
         }
 
          // If calculated power levels drop very low, set desired_on to false,
-         // unless kept on for charging. This is a fail-safe.
+         // unless kept on for charging.
          if (!keep_iec_for_charge && calculated_iec_power_level < 0.01) desired_iec_on = false;
          if (calculated_ev_power_level < 0.01) desired_ev_on = false;
 
 
         // Determine power mode when not accelerating - based on desired state
         if (current_brake && current_speed > MIN_SPEED) {
-            new_power_mode = 3; // Frenagem regenerativa
+            new_power_mode = 3; // Regenerative Braking
         } else if (current_speed > MIN_SPEED) {
              // Coasting modes - based on which engines are desired to be on
-             if (desired_ev_on && desired_iec_on) new_power_mode = 1; // Hybrid Coasting (unlikely with target=0, but possible if ramping down)
+             if (desired_ev_on && desired_iec_on) new_power_mode = 1; // Hybrid Coasting
              else if (desired_ev_on) new_power_mode = 0; // EV Only Coasting
              else if (desired_iec_on) new_power_mode = 2; // IEC Only Coasting (possibly charging)
              else new_power_mode = 4; // Coasting without propulsion (engines off)
         } else { // Vehicle stopped
              if(desired_iec_on) { // IEC kept on for charging while stopped
-                 new_power_mode = 5; // IEC Charging/Idle (New mode for clarity)
+                 new_power_mode = 5; // IEC Charging/Idle
              } else {
-                 new_power_mode = 4; // Estacionado (Engines off)
+                 new_power_mode = 4; // Engines off
              }
         }
     }
@@ -433,7 +423,6 @@ void vmu_control_engines() {
         // Don't send SET_POWER in the same cycle as START. Module needs to report ON first.
     } else if (!desired_ev_on && current_ev_on) {
         // VMU wants EV OFF, but it's currently ON -> Send STOP command
-        // Send STOP regardless of commanded power level, assuming the module handles graceful shutdown/ramp-down.
         ev_cmd.type = CMD_STOP;
         send_ev_cmd = true;
     }
@@ -468,14 +457,7 @@ void vmu_control_engines() {
              final_ev_cmd.power_level = calculated_ev_power_level;
              final_send_ev_cmd = true;
          }
-    } else if (desired_ev_on && !current_ev_on && final_ev_cmd.type == CMD_START) {
-         // If we just sent a START command and the engine is not yet reported ON,
-         // optionally send the initial power level immediately after START.
-         // This depends on the module's ability to process SET_POWER right after START.
-         // For robustness in a real system, waiting for current_ev_on to become true is safer.
-         // Sticking to the safer approach: only send SET_POWER if current_ev_on is true.
     }
-
 
     // IEC Commands (Refined Logic similar to EV)
     EngineCommand final_iec_cmd = {0};
@@ -515,17 +497,13 @@ void vmu_control_engines() {
           if (new_fuel < 0.0) new_fuel = 0.0;
     }
 
-    // Lógica de recarga da bateria pelo IEC (when it's acting as a generator/charging)
     // Recharge when IEC is actually ON and fuel is available.
-    // The recharge rate is proportional to the commanded IEC power level in this simplified model.
     if (current_iec_on && fuel_ok && new_battery < 100) {
          new_battery += IEC_RECHARGE_RATE;
          if (new_battery > 100) new_battery = 100;
     }
 
-    // Recarga regenerativa (EV motor acting as generator) - happens when braking/coasting at speed
-    // VMU calculates the effect on the battery. This happens regardless of whether the EV motor is 'on' for propulsion,
-    // as long as the EV module is capable of performing regen (which it should be if it's part of the system).
+    // Regenerative braking logic - recharge battery when braking or coasting
     // This logic uses current speed and brake state to calculate the regen amount.
     if (!current_accelerator && current_speed > MIN_SPEED && new_battery < 100) { // Only regenerate if battery is not full and car is moving/braking
          if (current_brake) {
@@ -539,12 +517,12 @@ void vmu_control_engines() {
      }
 
 
-    // Atualizar modo de energia final based on the calculated desired state
+    
     // This represents the mode the VMU is attempting to achieve.
      if (!current_accelerator && !current_brake && current_speed < MIN_SPEED + 0.1 && !desired_ev_on && !desired_iec_on) {
-           new_power_mode = 4; // Estacionado (Requested engines off and stopped)
+           new_power_mode = 4; // Parked/Coasting
      } else if (current_brake && current_speed > MIN_SPEED) {
-           new_power_mode = 3; // Frenagem regenerativa (Braking at speed)
+           new_power_mode = 3; // Regenerative Braking
      } else if (desired_ev_on && !desired_iec_on) {
            new_power_mode = 0; // EV Only (VMU is requesting EV only)
      } else if (desired_ev_on && desired_iec_on) {
@@ -561,22 +539,18 @@ void vmu_control_engines() {
      }
 
 
-    // Agora, atualizamos o estado compartilhado em um único bloco com semáforo
     sem_wait(sem);
-    // Update shared state with VMU's calculations and commanded values.
-    // The actual 'on'/'off' state (system_state->ev_on, system_state->iec_on)
-    // is updated by the respective engine modules.
-    system_state->ev_power_level = calculated_ev_power_level; // Store the commanded power level
-    system_state->iec_power_level = calculated_iec_power_level; // Store the commanded power level
+    // Update shared state with new values
+    system_state->ev_power_level = calculated_ev_power_level; 
+    system_state->iec_power_level = calculated_iec_power_level; 
     system_state->was_accelerating = new_was_accelerating;
-    system_state->power_mode = new_power_mode; // VMU's calculated operational mode
-    system_state->battery = new_battery;       // VMU's calculated battery state
-    system_state->fuel = new_fuel;             // VMU's calculated fuel state
-    // DO NOT update system_state->ev_on or system_state->iec_on here.
-    // These flags represent the actual state reported by the engine modules.
+    system_state->power_mode = new_power_mode; 
+    system_state->battery = new_battery;       
+    system_state->fuel = new_fuel;             
     sem_post(sem);
 
-    // Enviar comandos para os motores (fora da seção crítica para minimizar bloqueio)
+    // --- Send Commands ---
+    // Send prepared commands to engine modules via message queues
     if (final_send_ev_cmd) {
         mq_send(ev_mq, (const char *)&final_ev_cmd, sizeof(final_ev_cmd), 0);
     }
@@ -663,7 +637,7 @@ void init_communication(){
 
     printf("VMU Module Running\n");
 
-    
+    // Create thread to handle user input
     if (pthread_create(&input_thread, NULL, read_input, NULL) != 0) {
         perror("[VMU] Error creating input thread");
         running = 0; // Exit main loop if thread creation fails
