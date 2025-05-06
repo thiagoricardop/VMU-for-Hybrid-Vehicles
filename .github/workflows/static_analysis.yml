@@ -1,11 +1,13 @@
-name: cppcheck
+name: Cppcheck
 on:
   push:
     branches:
       - develop
+      - main
   pull_request:
-    branches: ["develop"]
-
+    branches:
+      - develop
+      - main
 jobs:
   static-analysis:
     runs-on: ubuntu-latest
