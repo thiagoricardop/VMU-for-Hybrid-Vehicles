@@ -1,13 +1,14 @@
-name: Unit tests
+name: Code Coverage
 
 on:
   push:
     branches:
+      - main
       - develop
-      - documentation/tests
   pull_request:
-    branches: ["develop"]
-
+    branches:
+      - main
+      - develop
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
@@ -19,6 +20,11 @@ jobs:
     - name: update docker env
       run: docker build -t vmu-dev .
 
-    - name: Build and test
-      run: |
-        docker run --rm -v $(pwd):/app vmu-dev bash -c "make clean && make && make test && make coverage"
+    - name: Build
+      run: docker run --rm -v $(pwd):/app vmu-dev bash -c "make clean && make"
+
+    - name: Unit Tests
+      run: docker run --rm -v $(pwd):/app vmu-dev bash -c "make test"
+      
+    - name: Code Coverage (MC/DC)
+      run: docker run --rm -v $(pwd):/app vmu-dev bash -c "make coverage"
