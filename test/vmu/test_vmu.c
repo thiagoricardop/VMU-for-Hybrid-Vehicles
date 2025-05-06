@@ -26,15 +26,12 @@ extern volatile sig_atomic_t paused;
 extern pthread_t input_thread;
 
 // --- Declare variables for the resources *created by EV/IEC* (simulating their setup) ---
-// These descriptors/pointers are held by the test suite to clean up resources
-// that VMU expects to *open*. VMU itself creates the SHM, SEM, and its sending MQs.
-static mqd_t test_ev_mq_receive_sim = (mqd_t)-1; // Simulated EV's receive MQ (VMU sends to this)
-static mqd_t test_iec_mq_receive_sim = (mqd_t)-1; // Simulated IEC's receive MQ (VMU sends to this)
+
+static mqd_t test_ev_mq_receive_sim = (mqd_t)-1;
+static mqd_t test_iec_mq_receive_sim = (mqd_t)-1;
 
 
 // --- Helper function to simulate dependent modules' resource creation (EV/IEC) ---
-// This creates the message queues that VMU's init_communication expects to open.
-// This function is NOT part of the VMU code being tested, it's test infrastructure.
 void create_dependent_module_resources_vmu() {
     // Message Queue for EV (EV receives from this - VMU sends to this)
     struct mq_attr mq_attributes;
@@ -44,7 +41,6 @@ void create_dependent_module_resources_vmu() {
     mq_attributes.mq_curmsgs = 0;
 
     // We open O_RDONLY | O_CREAT here to simulate the other module creating it.
-    // VMU will open it O_WRONLY.
     test_ev_mq_receive_sim = mq_open(EV_COMMAND_QUEUE_NAME, O_RDONLY | O_CREAT, 0666, &mq_attributes);
     if (test_ev_mq_receive_sim == (mqd_t)-1) {
         perror("Test Setup VMU: Error creating simulated EV message queue");
@@ -64,7 +60,7 @@ void create_dependent_module_resources_vmu() {
 }
 
 // --- Helper function to simulate dependent modules' resource cleanup (EV/IEC) ---
-// This unlinks the message queues created by the helper.
+
 void cleanup_dependent_module_resources_vmu() {
     if (test_ev_mq_receive_sim != (mqd_t)-1) {
         mq_close(test_ev_mq_receive_sim);
@@ -76,43 +72,20 @@ void cleanup_dependent_module_resources_vmu() {
         mq_unlink(IEC_COMMAND_QUEUE_NAME);
         test_iec_mq_receive_sim = (mqd_t)-1;
     }
-     // Note: VMU's cleanup() handles unlinking VMU's SHM and SEM, and closing/unlinking its *sending* MQs.
-     // We only clean up the resources *we* created to simulate the other modules.
     printf("Test Teardown VMU: Dependent module resources unlinked (MQs).\n");
 }
 
 
 // --- Test Fixture Setup Function ---
-// This runs before each test in the TCase.
 void vmu_setup(void) {
-    // 1. Simulate dependent modules creating their resources (MQs VMU expects to open)
     create_dependent_module_resources_vmu();
 
-    // 2. Call the actual vmu.c init_communication function
-    // Ensure global flags are reset for each test
     running = 1;
     paused = 0;
 
-    // Note: init_communication in vmu.c creates SHM, SEM, and VMU's sending MQs,
-    // and also starts the input thread (read_input).
-    // The read_input thread blocks on fgets(stdin). In a test environment without
-    // interactive input, this causes the test process to hang and timeout.
-    // To prevent this, we will close stdin after calling init_communication.
-    // This will cause fgets to return EOF, the thread loop will terminate,
-    // allowing the test and subsequent teardown to complete.
-
-    init_communication(); // Call the function from vmu.c
-
-    // Close stdin immediately after the input thread is likely started.
-    // This unblocks the fgets call within that thread in the test process.
-    // This is a workaround specific to testing the VMU module in isolation
-    // using this unit test framework without mocking stdin.
+    init_communication(); 
+    // Close stdin to prevent blocking on fgets in the input thread
     fclose(stdin);
-    // Re-open stdin from /dev/null to allow other potential stdin operations if needed
-    // (though most unit tests shouldn't rely on stdin).
-    // Note: This might affect other parts of the test environment; closing is usually sufficient.
-    // stdin = fopen("/dev/null", "r");
-
 
     // Basic checks that init_communication succeeded
     ck_assert_ptr_ne(system_state, MAP_FAILED);
@@ -147,23 +120,10 @@ void vmu_setup(void) {
 }
 
 // --- Test Fixture Teardown Function ---
-// This runs after each test in the TCase.
 void vmu_teardown(void) {
-    // 1. Call the actual vmu.c cleanup function
-    // This should clean up VMU's resources and signal other modules to stop.
-    // It also attempts to cancel the input thread.
-    // Closing stdin in setup should have allowed the input thread to exit
-    // or be cancelable by the time cleanup runs.
+    
     cleanup(); // Call the cleanup function from vmu.c
 
-    // The assertions below were failing because the vmu.c cleanup function
-    // does not explicitly set the global pointers/descriptors to MAP_FAILED or -1
-    // after unmapping/closing them. The OS handles resource release after unlink/close.
-    // Removing these assertions as they test an implementation detail not present in vmu.c.
-    // ck_assert_ptr_eq(system_state, MAP_FAILED);
-    // ck_assert_ptr_eq(sem, SEM_FAILED);
-    // ck_assert_int_eq(ev_mq, (mqd_t)-1);
-    // ck_assert_int_eq(iec_mq, (mqd_t)-1);
 
     // 2. Clean up the resources created by the test setup (simulating EV/IEC unlink)
     cleanup_dependent_module_resources_vmu();
@@ -178,18 +138,15 @@ START_TEST(test_vmu_init_communication_success)
     // This test primarily verifies that the setup function (which calls init_communication)
     // completes without errors and that the global variables are initialized and resources opened/created.
     // The assertions are mostly in the setup function itself.
-    // No additional assertions needed here unless testing specific side effects not covered by setup.
 }
 END_TEST
 
 START_TEST(test_vmu_init_system_state)
 {
-    // This test directly calls init_system_state to verify its effect on a SystemState struct.
-    // We need a separate SystemState struct as the global one is managed by setup/teardown.
     SystemState test_state;
     memset(&test_state, 0xFF, sizeof(SystemState)); // Fill with junk to ensure init sets everything
 
-    init_system_state(&test_state); // Call the function under test
+    init_system_state(&test_state); 
 
     ck_assert_msg(test_state.accelerator == false, "Initial accelerator state incorrect");
     ck_assert_msg(test_state.brake == false, "Initial brake state incorrect");
@@ -218,9 +175,9 @@ START_TEST(test_vmu_set_acceleration)
     system_state->brake = true;
     sem_post(sem);
 
-    set_acceleration(true); // Call the function under test
+    set_acceleration(true); 
 
-    // Verify shared state is updated
+    
     sem_wait(sem);
     ck_assert_msg(system_state->accelerator == true, "Accelerator should be true after setting acceleration");
     ck_assert_msg(system_state->brake == false, "Brake should be false after setting acceleration");
@@ -236,9 +193,9 @@ START_TEST(test_vmu_set_braking)
     system_state->brake = false;
     sem_post(sem);
 
-    set_braking(true); // Call the function under test
+    set_braking(true); 
 
-    // Verify shared state is updated
+    
     sem_wait(sem);
     ck_assert_msg(system_state->brake == true, "Brake should be true after setting braking");
     ck_assert_msg(system_state->accelerator == false, "Accelerator should be false after setting braking");
@@ -259,13 +216,13 @@ START_TEST(test_vmu_calculate_speed_accelerating_ev_only)
     system_state->iec_power_level = 0.0;
     sem_post(sem);
 
-    // Call the function under test
+    
     double initial_speed;
     sem_wait(sem);
     initial_speed = system_state->speed;
     sem_post(sem);
 
-    calculate_speed(system_state); // Call the function from vmu.c
+    calculate_speed(system_state); 
 
     sem_wait(sem);
     double speed_after_tick = system_state->speed;
@@ -290,13 +247,13 @@ START_TEST(test_vmu_calculate_speed_accelerating_iec_only)
     system_state->iec_power_level = 0.7; // 70% IEC power
     sem_post(sem);
 
-    // Call the function under test
+    
     double initial_speed;
     sem_wait(sem);
     initial_speed = system_state->speed;
     sem_post(sem);
 
-    calculate_speed(system_state); // Call the function from vmu.c
+    calculate_speed(system_state); 
 
     sem_wait(sem);
     double speed_after_tick = system_state->speed;
@@ -321,13 +278,13 @@ START_TEST(test_vmu_calculate_speed_accelerating_hybrid)
     system_state->iec_power_level = 0.5; // 50% IEC power
     sem_post(sem);
 
-    // Call the function under test
+    
     double initial_speed;
     sem_wait(sem);
     initial_speed = system_state->speed;
     sem_post(sem);
 
-    calculate_speed(system_state); // Call the function from vmu.c
+    calculate_speed(system_state); 
 
     sem_wait(sem);
     double speed_after_tick = system_state->speed;
@@ -352,13 +309,13 @@ START_TEST(test_vmu_calculate_speed_coasting)
     system_state->iec_power_level = 0.0;
     sem_post(sem);
 
-    // Call the function under test
+    
     double initial_speed;
     sem_wait(sem);
     initial_speed = system_state->speed;
     sem_post(sem);
 
-    calculate_speed(system_state); // Call the function from vmu.c
+    calculate_speed(system_state); 
 
     sem_wait(sem);
     double speed_after_tick = system_state->speed;
@@ -376,21 +333,19 @@ START_TEST(test_vmu_calculate_speed_braking)
     system_state->speed = 40.0;
     system_state->accelerator = false;
     system_state->brake = true;
-    // Engine state doesn't strictly matter for pure braking's speed calculation formula,
-    // but VMU logic might turn them off when braking. Let's set them to OFF for consistency.
     system_state->ev_on = false;
     system_state->iec_on = false;
     system_state->ev_power_level = 0.0;
     system_state->iec_power_level = 0.0;
     sem_post(sem);
 
-    // Call the function under test
+    
     double initial_speed;
     sem_wait(sem);
     initial_speed = system_state->speed;
     sem_post(sem);
 
-    calculate_speed(system_state); // Call the function from vmu.c
+    calculate_speed(system_state); 
 
     sem_wait(sem);
     double speed_after_tick = system_state->speed;
@@ -405,7 +360,7 @@ START_TEST(test_vmu_calculate_speed_ev_fade)
 {
      // Set initial state: accelerating, speed near EV limit, EV on, high EV power, IEC off
     sem_wait(sem);
-    system_state->speed = 65.0; // Between 60 and 70, where fade starts (1 - (65-60)/10 = 0.5 fade factor)
+    system_state->speed = 65.0;
     system_state->accelerator = true;
     system_state->brake = false;
     system_state->ev_on = true;
@@ -414,13 +369,13 @@ START_TEST(test_vmu_calculate_speed_ev_fade)
     system_state->iec_power_level = 0.0;
     sem_post(sem);
 
-    // Call the function under test
+    
     double initial_speed;
     sem_wait(sem);
     initial_speed = system_state->speed;
     sem_post(sem);
 
-    calculate_speed(system_state); // Call the function from vmu.c
+    calculate_speed(system_state); 
 
     sem_wait(sem);
     double speed_after_tick = system_state->speed;
@@ -429,9 +384,6 @@ START_TEST(test_vmu_calculate_speed_ev_fade)
     ck_assert_msg(speed_after_tick > initial_speed, "Speed should still increase near EV fade speed");
     ck_assert_msg(speed_after_tick <= MAX_SPEED, "Speed should not exceed MAX_SPEED");
 
-    // Optional: More precise check if needed, requires knowing the exact formula and rates.
-    // double expected_speed_increase_at_65 = (1.0 * (1.0 - (65.0 - 60.0) / 10.0) * 5) * (1.0 - (65.0 / MAX_SPEED) * 0.8) * SPEED_CHANGE_SMOOTHING; // Based on formula
-    // ck_assert_msg(fabs((speed_after_tick - initial_speed) - expected_speed_increase_at_65) < 1e-9, "Speed increase matches EV fade calculation");
 }
 END_TEST
 
@@ -448,7 +400,7 @@ START_TEST(test_vmu_calculate_speed_at_max_speed)
     system_state->iec_power_level = 1.0;
     sem_post(sem);
 
-    calculate_speed(system_state); // Call the function under test
+    calculate_speed(system_state); 
 
     sem_wait(sem);
     ck_assert_msg(system_state->speed == MAX_SPEED, "Speed should remain at MAX_SPEED when accelerating at max speed");
@@ -469,7 +421,7 @@ START_TEST(test_vmu_calculate_speed_at_min_speed_braking)
     system_state->iec_power_level = 0.0;
     sem_post(sem);
 
-    calculate_speed(system_state); // Call the function under test
+    calculate_speed(system_state); 
 
     sem_wait(sem);
     ck_assert_msg(system_state->speed == MIN_SPEED, "Speed should remain at MIN_SPEED when braking at min speed");
@@ -534,9 +486,9 @@ START_TEST(test_vmu_control_engines_state_accel_ev_only_low_speed)
     system_state->iec_power_level = 0.0;
     sem_post(sem);
 
-    // drain_message_queues(); // Skip MQ checks
+     
 
-    vmu_control_engines(); // Call the function under test
+    vmu_control_engines(); 
 
     // Verify State Changes in shared memory
     sem_wait(sem);
@@ -549,12 +501,11 @@ START_TEST(test_vmu_control_engines_state_accel_ev_only_low_speed)
     ck_assert_msg(fabs(system_state->battery - 80.0) < 1e-9, "Battery should not decrease (EV was off)");
     ck_assert_msg(fabs(system_state->fuel - 80.0) < 1e-9, "Fuel should not change");
     ck_assert_msg(system_state->was_accelerating == true, "was_accelerating should be true");
-    // Note: system_state->ev_on should remain false as it's updated by the EV module, not VMU.
     ck_assert_msg(system_state->ev_on == false, "system_state->ev_on should not be changed by VMU");
     ck_assert_msg(system_state->iec_on == false, "system_state->iec_on should not be changed by VMU");
     sem_post(sem);
 
-    // Skip MQ checks
+    
 }
 END_TEST
 
@@ -573,7 +524,7 @@ START_TEST(test_vmu_control_engines_state_accel_hybrid_medium_speed)
     system_state->iec_power_level = 0.0;
     sem_post(sem);
 
-    // drain_message_queues(); // Skip MQ checks
+     
 
     vmu_control_engines();
 
@@ -589,12 +540,11 @@ START_TEST(test_vmu_control_engines_state_accel_hybrid_medium_speed)
     // Recharge logic also depends on current_iec_on being true.
     ck_assert_msg(fabs(system_state->fuel - 80.0) < 1e-9, "Fuel should not change (IEC was off)");
     ck_assert_msg(system_state->was_accelerating == true, "was_accelerating should be true");
-    // Note: system_state->ev_on/iec_on should remain as they were initially set.
     ck_assert_msg(system_state->ev_on == true, "system_state->ev_on should not be changed by VMU");
     ck_assert_msg(system_state->iec_on == false, "system_state->iec_on should not be changed by VMU");
     sem_post(sem);
 
-    // Skip MQ checks
+    
 }
 END_TEST
 
@@ -613,7 +563,6 @@ START_TEST(test_vmu_control_engines_state_braking_regen)
     system_state->iec_power_level = 0.3;
     sem_post(sem);
 
-    // drain_message_queues(); // Skip MQ checks
 
     vmu_control_engines();
 
@@ -625,9 +574,6 @@ START_TEST(test_vmu_control_engines_state_braking_regen)
     ck_assert_msg(system_state->iec_power_level < 0.3 && system_state->iec_power_level >= 0.0, "IEC power level should decrease towards 0");
     // Battery increases due to regen logic (depends on brake=true, speed>MIN_SPEED)
     ck_assert_msg(system_state->battery > 70.0, "Battery should increase (regen)");
-    // Fuel consumption stops as calculated_iec_power_level decreases (and current_iec_on was true).
-    // Recharge also stops as calculated_iec_power_level decreases.
-    // Exact fuel value depends on consumption rate vs initial power level. Check it decreased.
     ck_assert_msg(system_state->fuel < 80.0, "Fuel should decrease slightly (IEC was on initially)");
     ck_assert_msg(system_state->was_accelerating == false, "was_accelerating should be false");
     // Note: system_state->ev_on/iec_on should remain as they were initially set.
@@ -635,7 +581,7 @@ START_TEST(test_vmu_control_engines_state_braking_regen)
     ck_assert_msg(system_state->iec_on == true, "system_state->iec_on should not be changed by VMU");
     sem_post(sem);
 
-    // Skip MQ checks
+    
 }
 END_TEST
 
@@ -654,7 +600,7 @@ START_TEST(test_vmu_control_engines_state_coasting_iec_charge)
     system_state->iec_power_level = 0.0;
     sem_post(sem);
 
-    // drain_message_queues(); // Skip MQ checks
+     
 
     vmu_control_engines();
 
@@ -675,7 +621,7 @@ START_TEST(test_vmu_control_engines_state_coasting_iec_charge)
     ck_assert_msg(system_state->iec_on == false, "system_state->iec_on should not be changed by VMU");
     sem_post(sem);
 
-    // Skip MQ checks
+    
 }
 END_TEST
 
@@ -1062,9 +1008,6 @@ START_TEST(test_vmu_control_engines_power_ramping)
 END_TEST
 
 // --- Tests for display_status ---
-// Note: These tests primarily check if the function runs without crashing for various states.
-// Verifying the exact console output is complex in automated tests and often not necessary
-// unless precise formatting is critical.
 
 START_TEST(test_vmu_display_status_runs)
 {
@@ -1170,7 +1113,7 @@ START_TEST(test_vmu_control_engines_state_accel_low_battery_ok_fuel)
     system_state->iec_power_level = 0.0;
     sem_post(sem);
 
-    // drain_message_queues(); // Skip MQ checks
+     
 
     vmu_control_engines();
 
@@ -1191,7 +1134,7 @@ START_TEST(test_vmu_control_engines_state_accel_low_battery_ok_fuel)
     ck_assert_msg(system_state->iec_on == false, "system_state->iec_on should not be changed by VMU");
     sem_post(sem);
 
-    // Skip MQ checks
+    
 }
 END_TEST
 
@@ -1210,7 +1153,7 @@ START_TEST(test_vmu_control_engines_state_accel_ok_battery_low_fuel_below_limit)
     system_state->iec_power_level = 0.0;
     sem_post(sem);
 
-    // drain_message_queues(); // Skip MQ checks
+     
 
     vmu_control_engines();
 
@@ -1232,7 +1175,7 @@ START_TEST(test_vmu_control_engines_state_accel_ok_battery_low_fuel_below_limit)
     ck_assert_msg(system_state->iec_on == false, "system_state->iec_on should not be changed by VMU");
     sem_post(sem);
 
-    // Skip MQ checks
+    
 }
 END_TEST
 
@@ -1251,7 +1194,7 @@ START_TEST(test_vmu_control_engines_state_accel_ok_battery_low_fuel_at_limit)
     system_state->iec_power_level = 0.0;
     sem_post(sem);
 
-    // drain_message_queues(); // Skip MQ checks
+     
 
     vmu_control_engines();
 
@@ -1272,7 +1215,7 @@ START_TEST(test_vmu_control_engines_state_accel_ok_battery_low_fuel_at_limit)
     ck_assert_msg(system_state->iec_on == false, "system_state->iec_on should not be changed by VMU");
     sem_post(sem);
 
-    // Skip MQ checks
+    
 }
 END_TEST
 
@@ -1291,7 +1234,7 @@ START_TEST(test_vmu_control_engines_state_accel_low_battery_low_fuel)
     system_state->iec_power_level = 0.1; // Some initial power
     sem_post(sem);
 
-    // drain_message_queues(); // Skip MQ checks
+     
 
     vmu_control_engines();
 
@@ -1309,7 +1252,7 @@ START_TEST(test_vmu_control_engines_state_accel_low_battery_low_fuel)
     ck_assert_msg(system_state->iec_on == false, "system_state->iec_on should not be changed by VMU");
     sem_post(sem);
 
-    // Skip MQ checks
+    
 }
 END_TEST
 
@@ -1328,7 +1271,7 @@ START_TEST(test_vmu_control_engines_state_accel_ok_fuel_ok_battery_low_speed_ev_
     system_state->iec_power_level = 0.0;
     sem_post(sem);
 
-    // drain_message_queues(); // Skip MQ checks
+     
 
     vmu_control_engines();
 
@@ -1351,7 +1294,7 @@ START_TEST(test_vmu_control_engines_state_accel_ok_fuel_ok_battery_low_speed_ev_
     ck_assert_msg(system_state->iec_on == false, "system_state->iec_on should not be changed by VMU");
     sem_post(sem);
 
-    // Skip MQ checks
+    
 }
 END_TEST
 
@@ -1371,9 +1314,9 @@ Suite *vmu_suite(void) {
 
     // Core tests (Initialization, cleanup, init_system_state)
     tc_core = tcase_create("Core");
-    tcase_add_checked_fixture(tc_core, vmu_setup, vmu_teardown); // Use checked fixture for setup/teardown
+    tcase_add_checked_fixture(tc_core, vmu_setup, vmu_teardown);
     tcase_add_test(tc_core, test_vmu_init_communication_success);
-    tcase_add_test(tc_core, test_vmu_init_system_state); // Direct test of init_system_state
+    tcase_add_test(tc_core, test_vmu_init_system_state); 
     suite_add_tcase(s, tc_core);
 
     // Control tests (set_acceleration, set_braking)
@@ -1401,15 +1344,14 @@ Suite *vmu_suite(void) {
     suite_add_tcase(s, tc_speed);
 
 
-    // Signal handling tests (by direct function call)
+    // Signal handling tests
     tc_signals = tcase_create("SignalHandlers");
-    // No fixture needed as we directly call the handler and check globals
     tcase_add_test(tc_signals, test_vmu_handle_signal_pause);
     tcase_add_test(tc_signals, test_vmu_handle_signal_shutdown);
     tcase_add_test(tc_signals, test_vmu_handle_signal_unknown);
     suite_add_tcase(s, tc_signals);
 
-    // Engine control logic state tests (No MQ checks)
+    // Engine control logic state tests 
     tc_engine_control_state = tcase_create("EngineControlState");
     tcase_add_checked_fixture(tc_engine_control_state, vmu_setup, vmu_teardown);
     tcase_add_test(tc_engine_control_state, test_vmu_control_engines_state_accel_ev_only_low_speed);
@@ -1446,9 +1388,6 @@ Suite *vmu_suite(void) {
     suite_add_tcase(s, tc_display);
 
 
-    // Note: Testing read_input thread directly in this framework is complex.
-    // ...existing code...
-
     return s;
 }
 
@@ -1460,23 +1399,14 @@ int main(void) {
     s = vmu_suite();
     sr = srunner_create(s);
 
-    // Set nofork to debug tests within the same process.
-    // Note: If using CK_NOFORK, the stdin closing workaround might need adjustment
-    // as all tests run in the same process and stdin is shared.
-    // In the default forking mode, each test gets a fresh stdin.
+    
     // srunner_set_fork_status(sr, CK_NOFORK);
 
     srunner_run_all(sr, CK_NORMAL);
     number_failed = srunner_ntests_failed(sr);
     srunner_free(sr);
-
-    // Unlink dependent module resources just in case previous runs failed cleanup
-    // This is a safeguard, teardown *should* handle this.
-    // Called after srunner_free in case of crashes during test execution.
+    
     cleanup_dependent_module_resources_vmu();
-
-    // VMU's own resources (SHM, SEM, sending MQs) are unlinked by VMU's cleanup(),
-    // which is called in vmu_teardown.
 
     return (number_failed == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
